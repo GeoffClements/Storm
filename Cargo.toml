@@ -1,0 +1,13 @@
+[package]
+name = "storm"
+version = "0.1.0"
+authors = ["Geoff Clements <ro2kz0@gmail.com>"]
+
+[dependencies]
+log = "0.4"
+fern = "0.5"
+
+[dependencies.clap]
+version = "2"
+default-features = false
+features = ["wrap_help"]
