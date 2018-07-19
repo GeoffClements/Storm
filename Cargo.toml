@@ -6,6 +6,9 @@ authors = ["Geoff Clements <ro2kz0@gmail.com>"]
 [dependencies]
 log = "0.4"
 fern = "0.5"
+tokio-core = "0.1"
+tokio-timer = "0.2"
+futures = "0.1"
 
 [dependencies.clap]
 version = "2"

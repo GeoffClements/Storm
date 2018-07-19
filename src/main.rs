@@ -2,6 +2,9 @@ extern crate clap;
 #[macro_use]
 extern crate log;
 extern crate fern;
+extern crate tokio_core;
+extern crate tokio_timer;
+extern crate futures;
 
 mod proto;
 
@@ -48,6 +51,7 @@ fn main() {
         _ => LevelFilter::Off,
     };
 
+    // TODO: implement more output options
     fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
@@ -64,8 +68,9 @@ fn main() {
 
     let server_addr = match opts.value_of("server") {
         Some(ip_s) => Ipv4Addr::from_str(ip_s).unwrap(),
-        None => proto::discover(),
+        None => proto::discover().unwrap_or_else(|e| {
+            error!("Network error whilst looking for server: {}", e);
+            Ipv4Addr::new(127, 0, 0, 1)
+        }),
     };
-
-    info!("{:?}", server_addr)
 }
