@@ -1,12 +1,14 @@
 extern crate clap;
-#[macro_use]
-extern crate log;
+#[macro_use] extern crate log;
 extern crate fern;
 extern crate tokio_core;
 extern crate tokio_timer;
 extern crate tokio_codec;
+extern crate tokio_io;
+extern crate tokio_tcp;
 extern crate futures;
 extern crate bytes;
+extern crate actix;
 
 mod proto;
 mod codec;
@@ -78,4 +80,6 @@ fn main() {
     };
 
     info!("Using server address {}", server_addr);
+
+    proto::run(server_addr);
 }

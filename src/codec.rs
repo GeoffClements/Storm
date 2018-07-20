@@ -5,7 +5,7 @@ use std::convert::From;
 use std::io;
 use std::net::Ipv4Addr;
 
-struct SlimCodec;
+pub struct SlimCodec;
 
 impl tokio_codec::Encoder for SlimCodec {
     type Item = ClientMessage;
@@ -57,7 +57,7 @@ pub enum ClientMessage {
     },
 }
 
-enum ServerMessage {
+pub enum ServerMessage {
     Serv {
         ip_address: Ipv4Addr,
         sync_group_id: Option<String>,
