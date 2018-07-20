@@ -8,7 +8,9 @@ log = "0.4"
 fern = "0.5"
 tokio-core = "0.1"
 tokio-timer = "0.2"
+tokio-codec = "0.1"
 futures = "0.1"
+bytes = "0.4"
 
 [dependencies.clap]
 version = "2"

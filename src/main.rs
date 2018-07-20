@@ -4,9 +4,12 @@ extern crate log;
 extern crate fern;
 extern crate tokio_core;
 extern crate tokio_timer;
+extern crate tokio_codec;
 extern crate futures;
+extern crate bytes;
 
 mod proto;
+mod codec;
 
 use log::LevelFilter;
 
@@ -62,15 +65,17 @@ fn main() {
             ))
         })
         .level(log_level)
-        .chain(std::io::stdout())
+        .chain(std::io::stderr())
         .apply()
         .expect("Failure setting up logger");
 
     let server_addr = match opts.value_of("server") {
         Some(ip_s) => Ipv4Addr::from_str(ip_s).unwrap(),
         None => proto::discover().unwrap_or_else(|e| {
-            error!("Network error whilst looking for server: {}", e);
-            Ipv4Addr::new(127, 0, 0, 1)
+            error!("Network error whilst looking for server: {}, exiting.", e);
+            std::process::exit(1);
         }),
     };
+
+    info!("Using server address {}", server_addr);
 }
