@@ -97,7 +97,7 @@ impl From<ClientMessage> for BytesMut {
         }
 
         let mut msg_length = Vec::new();
-        msg_length.put_u32_le(buf.len() as u32 + 4);
+        msg_length.put_u32_le(buf[4..].len() as u32);
         msg_length.into_iter().for_each(|v| buf.insert(4, v));
         BytesMut::from(buf)
     }

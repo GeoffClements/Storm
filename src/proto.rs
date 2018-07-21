@@ -1,13 +1,13 @@
 use actix;
-use actix::{Actor, Arbiter, AsyncContext, Context, System};
+use actix::{Actor, ActorContext, Arbiter, AsyncContext, Context, System};
 use futures::{future, Future, Sink, Stream};
+use rand::{thread_rng, Rng};
 use tokio_codec::FramedRead;
 use tokio_core;
 use tokio_io::io::WriteHalf;
 use tokio_io::AsyncRead;
 use tokio_tcp::TcpStream;
 use tokio_timer;
-use rand::{thread_rng, Rng};
 
 use codec;
 
@@ -16,7 +16,6 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
 struct Proto {
-    server_ip_addr: Ipv4Addr,
     sync_group_id: Option<String>,
     framed: actix::io::FramedWrite<WriteHalf<TcpStream>, codec::SlimCodec>,
 }
@@ -26,6 +25,14 @@ impl Actor for Proto {
 
     fn started(&mut self, _ctx: &mut Context<Self>) {
         let caps = "Model=Storm,AccuratePlayPoints=1,HasDigitalOut=1,HasPolarityInversion=1";
+        let caps = match self.sync_group_id {
+            Some(ref sync_group) => {
+                let sg = format!(",SyncgroupID={}", sync_group);
+                format!("{}{}", caps, sg)
+            }
+            None => caps.to_owned(),
+        };
+
         let helo = codec::ClientMessage::Helo {
             device_id: 12,
             revision: 0,
@@ -33,7 +40,7 @@ impl Actor for Proto {
             uuid: [0; 16],
             wlan_channel_list: 0,
             bytes_received: 0,
-            capabilities: caps.to_owned(),
+            capabilities: caps,
         };
 
         info!("Sending Helo");
@@ -43,8 +50,6 @@ impl Actor for Proto {
     fn stopping(&mut self, _ctx: &mut Context<Self>) -> actix::Running {
         info!("Sending Bye");
         self.framed.write(codec::ClientMessage::Bye(0));
-        ::std::thread::sleep(Duration::from_secs(1));
-        System::current().stop();
         actix::Running::Stop
     }
 }
@@ -52,10 +57,15 @@ impl Actor for Proto {
 impl actix::io::WriteHandler<io::Error> for Proto {}
 
 impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
-    fn handle(&mut self, msg: codec::ServerMessage, _: &mut Context<Self>) {
+    fn handle(&mut self, msg: codec::ServerMessage, ctx: &mut Context<Self>) {
         match msg {
-            codec::ServerMessage::Serv { .. } => {
+            codec::ServerMessage::Serv {
+                ip_address,
+                sync_group_id,
+            } => {
                 info!("Got serv message");
+                spawn(ip_address, sync_group_id);
+                ctx.stop();
             }
             codec::ServerMessage::Unrecognised(msg) => {
                 warn!("Unrecognised message: {}", msg);
@@ -65,29 +75,32 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
     }
 }
 
-pub fn run(server_ip: Ipv4Addr) {
-    System::run(move || {
-        let addr = SocketAddr::new(IpAddr::V4(server_ip), 3483);
-        Arbiter::spawn(
-            TcpStream::connect(&addr)
-                .and_then(move |stream| {
-                    let addr = Proto::create(move |ctx| {
-                        let (r, w) = stream.split();
-                        ctx.add_stream(FramedRead::new(r, codec::SlimCodec));
-                        Proto {
-                            server_ip_addr: server_ip,
-                            sync_group_id: None,
-                            framed: actix::io::FramedWrite::new(w, codec::SlimCodec, ctx),
-                        }
-                    });
-                    future::ok(())
-                })
-                .map_err(|e| {
-                    error!("Cannot connect to server: {}", e);
-                    ::std::process::exit(2)
-                }),
-        );
-    });
+pub fn run(server_ip: Ipv4Addr, sync_group: Option<String>) {
+    let sys = System::new("Storm");
+    spawn(server_ip, sync_group);
+    sys.run();
+}
+
+fn spawn(server_ip: Ipv4Addr, sync_group: Option<String>) {
+    let addr = SocketAddr::new(IpAddr::V4(server_ip), 3483);
+    Arbiter::spawn(
+        TcpStream::connect(&addr)
+            .and_then(move |stream| {
+                Proto::create(move |ctx| {
+                    let (r, w) = stream.split();
+                    ctx.add_stream(FramedRead::new(r, codec::SlimCodec));
+                    Proto {
+                        sync_group_id: sync_group,
+                        framed: actix::io::FramedWrite::new(w, codec::SlimCodec, ctx),
+                    }
+                });
+                future::ok(())
+            })
+            .map_err(|e| {
+                error!("Cannot connect to server: {}", e);
+                ::std::process::exit(2)
+            }),
+    );
 }
 
 struct Discover;

@@ -6,6 +6,7 @@ extern crate tokio_timer;
 extern crate tokio_codec;
 extern crate tokio_io;
 extern crate tokio_tcp;
+extern crate tokio_signal;
 extern crate futures;
 extern crate bytes;
 extern crate actix;
@@ -82,5 +83,5 @@ fn main() {
 
     info!("Using server address {}", server_addr);
 
-    proto::run(server_addr);
+    proto::run(server_addr, None);
 }
