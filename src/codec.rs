@@ -55,6 +55,7 @@ pub enum ClientMessage {
         // language: u16,
         capabilities: String,
     },
+    Bye(u8),
 }
 
 pub enum ServerMessage {
@@ -89,11 +90,15 @@ impl From<ClientMessage> for BytesMut {
                 buf.put_u64_be(bytes_received);
                 buf.put(capabilities.as_bytes());
             }
+            ClientMessage::Bye(val) => {
+                buf.put("BYE!".as_bytes());
+                buf.put_u8(val);
+            }
         }
 
         let mut msg_length = Vec::new();
-        msg_length.put_u32_be(buf.len() as u32 + 4);
-        msg_length.into_iter().rev().for_each(|v| buf.insert(4, v));
+        msg_length.put_u32_le(buf.len() as u32 + 4);
+        msg_length.into_iter().for_each(|v| buf.insert(4, v));
         BytesMut::from(buf)
     }
 }

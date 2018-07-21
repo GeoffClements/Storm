@@ -7,6 +7,7 @@ use tokio_io::io::WriteHalf;
 use tokio_io::AsyncRead;
 use tokio_tcp::TcpStream;
 use tokio_timer;
+use rand::{thread_rng, Rng};
 
 use codec;
 
@@ -28,7 +29,7 @@ impl Actor for Proto {
         let helo = codec::ClientMessage::Helo {
             device_id: 12,
             revision: 0,
-            mac: [0; 6],
+            mac: random_mac(),
             uuid: [0; 16],
             wlan_channel_list: 0,
             bytes_received: 0,
@@ -40,7 +41,10 @@ impl Actor for Proto {
     }
 
     fn stopping(&mut self, _ctx: &mut Context<Self>) -> actix::Running {
-        info!("Disconnected");
+        info!("Sending Bye");
+        self.framed.write(codec::ClientMessage::Bye(0));
+        ::std::thread::sleep(Duration::from_secs(1));
+        System::current().stop();
         actix::Running::Stop
     }
 }
@@ -136,4 +140,15 @@ pub fn discover() -> io::Result<Ipv4Addr> {
         Err(e) => Err(e),
         _ => unreachable!(),
     }
+}
+
+fn random_mac() -> [u8; 6] {
+    let mut rng = thread_rng();
+    let mut mac = [0; 6];
+    let mut mac_temp = Vec::new();
+
+    (0..6).for_each(|_| mac_temp.push(rng.gen::<u8>()));
+    mac_temp[0] |= 0b0000_0010;
+    mac.copy_from_slice(&mac_temp);
+    mac
 }

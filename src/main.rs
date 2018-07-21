@@ -9,6 +9,7 @@ extern crate tokio_tcp;
 extern crate futures;
 extern crate bytes;
 extern crate actix;
+extern crate rand;
 
 mod proto;
 mod codec;
