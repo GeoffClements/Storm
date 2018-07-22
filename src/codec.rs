@@ -34,7 +34,7 @@ impl tokio_codec::Decoder for SlimCodec {
         buf.split_to(2);
         let msg = buf.split_to(size);
 
-        match ServerMessage::from(msg) {
+        match msg.into() {
             ServerMessage::Error => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Server data corrupted",
@@ -63,6 +63,7 @@ pub enum ServerMessage {
         ip_address: Ipv4Addr,
         sync_group_id: Option<String>,
     },
+    Status,
     Unrecognised(String),
     Error,
 }
@@ -99,15 +100,15 @@ impl From<ClientMessage> for BytesMut {
         let mut msg_length = Vec::new();
         msg_length.put_u32_le(buf[4..].len() as u32);
         msg_length.into_iter().for_each(|v| buf.insert(4, v));
-        BytesMut::from(buf)
+        buf.into()
     }
 }
 
 impl From<BytesMut> for ServerMessage {
     fn from(mut src: BytesMut) -> ServerMessage {
-        let cmd: String = src.split_to(4).into_iter().map(|c| c as char).collect();
+        let msg: String = src.split_to(4).into_iter().map(|c| c as char).collect();
 
-        match cmd.as_str() {
+        match msg.as_str() {
             "serv" => {
                 if src.len() < 4 {
                     ServerMessage::Error
@@ -126,6 +127,18 @@ impl From<BytesMut> for ServerMessage {
                     ServerMessage::Serv {
                         ip_address: ip_addr,
                         sync_group_id: sync_group,
+                    }
+                }
+            }
+            "strm" => {
+                let command = src.split_to(1)[0] as char;
+                match command {
+                    't' => ServerMessage::Status,
+                    cmd @ _ => {
+                        let mut msg = msg.to_owned();
+                        msg.push('_');
+                        msg.push(cmd);
+                        ServerMessage::Unrecognised(msg)
                     }
                 }
             }

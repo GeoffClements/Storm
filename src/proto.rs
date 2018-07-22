@@ -6,6 +6,7 @@ use tokio_codec::FramedRead;
 use tokio_core;
 use tokio_io::io::WriteHalf;
 use tokio_io::AsyncRead;
+use tokio_signal::unix::{Signal, SIGTERM};
 use tokio_tcp::TcpStream;
 use tokio_timer;
 
@@ -23,15 +24,23 @@ struct Proto {
 impl Actor for Proto {
     type Context = Context<Self>;
 
+    // TODO:
+    //  Get capabilities from GStreamer (if it's possible)
+    //  Pass model name from command line
     fn started(&mut self, _ctx: &mut Context<Self>) {
-        let caps = "Model=Storm,AccuratePlayPoints=1,HasDigitalOut=1,HasPolarityInversion=1";
-        let caps = match self.sync_group_id {
-            Some(ref sync_group) => {
-                let sg = format!(",SyncgroupID={}", sync_group);
-                format!("{}{}", caps, sg)
-            }
-            None => caps.to_owned(),
-        };
+        let caps = vec![
+            "flc",
+            "ogg",
+            "mp3",
+            "Model=Storm",
+            "AccuratePlayPoints=1",
+            "HasDigitalOut=1",
+            "HasPolarityInversion=1",
+        ];
+        let mut caps: Vec<String> = caps.into_iter().map(|s| s.to_owned()).collect();
+        if let Some(ref sync_group) = self.sync_group_id {
+            caps.push(format!("SyncgroupID={}", sync_group));
+        }
 
         let helo = codec::ClientMessage::Helo {
             device_id: 12,
@@ -40,7 +49,7 @@ impl Actor for Proto {
             uuid: [0; 16],
             wlan_channel_list: 0,
             bytes_received: 0,
-            capabilities: caps,
+            capabilities: caps.join(","),
         };
 
         info!("Sending Helo");
@@ -64,8 +73,11 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 sync_group_id,
             } => {
                 info!("Got serv message");
-                spawn(ip_address, sync_group_id);
+                spawn_proto(ip_address, sync_group_id);
                 ctx.stop();
+            }
+            codec::ServerMessage::Status => {
+                info!("Got status request");
             }
             codec::ServerMessage::Unrecognised(msg) => {
                 warn!("Unrecognised message: {}", msg);
@@ -77,11 +89,12 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
 
 pub fn run(server_ip: Ipv4Addr, sync_group: Option<String>) {
     let sys = System::new("Storm");
-    spawn(server_ip, sync_group);
+    spawn_proto(server_ip, sync_group);
+    spawn_signal_handler();
     sys.run();
 }
 
-fn spawn(server_ip: Ipv4Addr, sync_group: Option<String>) {
+fn spawn_proto(server_ip: Ipv4Addr, sync_group: Option<String>) {
     let addr = SocketAddr::new(IpAddr::V4(server_ip), 3483);
     Arbiter::spawn(
         TcpStream::connect(&addr)
@@ -100,6 +113,19 @@ fn spawn(server_ip: Ipv4Addr, sync_group: Option<String>) {
                 error!("Cannot connect to server: {}", e);
                 ::std::process::exit(2)
             }),
+    );
+}
+
+fn spawn_signal_handler() {
+    Arbiter::spawn(
+        Signal::new(SIGTERM)
+            .flatten_stream()
+            .into_future()
+            .then(|_| {
+                info!("Received TERM signal, exiting");
+                System::current().stop();
+                future::ok(())
+            })
     );
 }
 
