@@ -55,7 +55,27 @@ pub enum ClientMessage {
         // language: u16,
         capabilities: String,
     },
+    Stat {
+        event_code: String,
+        stat_data: StatData,
+    },
     Bye(u8),
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct StatData {
+    pub buffer_size: u32,
+    pub fullness: u32,
+    pub bytes_received: u64,
+    pub sig_strength: u16,
+    pub jiffies: u32,
+    pub output_buffer_size: u32,
+    pub output_buffer_fullness: u32,
+    pub elapsed_seconds: u32,
+    pub voltage: u16,
+    pub elapsed_milliseconds: u32,
+    pub timestamp: u32,
+    pub error_code: u16,
 }
 
 pub enum ServerMessage {
@@ -63,7 +83,7 @@ pub enum ServerMessage {
         ip_address: Ipv4Addr,
         sync_group_id: Option<String>,
     },
-    Status,
+    Status(u32),
     Unrecognised(String),
     Error,
 }
@@ -94,6 +114,25 @@ impl From<ClientMessage> for BytesMut {
             ClientMessage::Bye(val) => {
                 buf.put("BYE!".as_bytes());
                 buf.put_u8(val);
+            }
+            ClientMessage::Stat {
+                event_code,
+                stat_data,
+            } => {
+                buf.put("STAT".as_bytes());
+                buf.put(event_code.as_bytes());
+                buf.put_u32_be(stat_data.buffer_size);
+                buf.put_u32_be(stat_data.fullness);
+                buf.put_u64_be(stat_data.bytes_received);
+                buf.put_u16_be(stat_data.sig_strength);
+                buf.put_u32_be(stat_data.jiffies);
+                buf.put_u32_be(stat_data.output_buffer_size);
+                buf.put_u32_be(stat_data.output_buffer_fullness);
+                buf.put_u32_be(stat_data.elapsed_seconds);
+                buf.put_u16_be(stat_data.voltage);
+                buf.put_u32_be(stat_data.elapsed_milliseconds);
+                buf.put_u32_be(stat_data.timestamp);
+                buf.put_u16_be(stat_data.error_code);
             }
         }
 
@@ -133,8 +172,17 @@ impl From<BytesMut> for ServerMessage {
             "strm" => {
                 let command = src.split_to(1)[0] as char;
                 match command {
-                    't' => ServerMessage::Status,
+                    't' => {
+                        if src.len() < 23 {
+                            ServerMessage::Error
+                        } else {
+                            let src = src.take();
+                            let timestamp = src[14..18].into_buf().get_u32_be();
+                            ServerMessage::Status(timestamp)
+                        }
+                    },
                     cmd @ _ => {
+                        src.take();
                         let mut msg = msg.to_owned();
                         msg.push('_');
                         msg.push(cmd);

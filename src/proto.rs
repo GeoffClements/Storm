@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 
 struct Proto {
     sync_group_id: Option<String>,
+    creation_time: Instant,
+    stat_data: codec::StatData,
     framed: actix::io::FramedWrite<WriteHalf<TcpStream>, codec::SlimCodec>,
 }
 
@@ -32,7 +34,7 @@ impl Actor for Proto {
             "flc",
             "ogg",
             "mp3",
-            "Model=Storm",
+            "ModelName=Storm",
             "AccuratePlayPoints=1",
             "HasDigitalOut=1",
             "HasPolarityInversion=1",
@@ -76,14 +78,29 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 spawn_proto(ip_address, sync_group_id);
                 ctx.stop();
             }
-            codec::ServerMessage::Status => {
+            codec::ServerMessage::Status(timestamp) => {
                 info!("Got status request");
+                let mut statdata = self.stat_data;
+                statdata.timestamp = timestamp;
+                statdata.jiffies = self.jiffies();
+                let stat = codec::ClientMessage::Stat {
+                    event_code: "STMt".to_owned(),
+                    stat_data: statdata,
+                };
+                self.framed.write(stat);
             }
             codec::ServerMessage::Unrecognised(msg) => {
                 warn!("Unrecognised message: {}", msg);
             }
             _ => {}
         }
+    }
+}
+
+impl Proto {
+    fn jiffies(&self) -> u32 {
+        let dur = self.creation_time.elapsed();
+        ((dur.as_secs() * 1000 + dur.subsec_millis() as u64) % (::std::u32::MAX as u64 + 1)) as u32
     }
 }
 
@@ -104,6 +121,8 @@ fn spawn_proto(server_ip: Ipv4Addr, sync_group: Option<String>) {
                     ctx.add_stream(FramedRead::new(r, codec::SlimCodec));
                     Proto {
                         sync_group_id: sync_group,
+                        creation_time: Instant::now(),
+                        stat_data: codec::StatData::default(),
                         framed: actix::io::FramedWrite::new(w, codec::SlimCodec, ctx),
                     }
                 });
