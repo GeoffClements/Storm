@@ -78,19 +78,49 @@ pub struct StatData {
     pub error_code: u16,
 }
 
+impl StatData {
+    pub fn make_stat_message(&self, head: &str) -> ClientMessage {
+        ClientMessage::Stat {
+            event_code: head.to_owned(),
+            stat_data: *self,
+        }
+    }
+}
+
+pub enum AudioFormat {
+    Pcm,
+    Mp3,
+    Flac,
+    Wma,
+    Ogg,
+    Aac,
+    Alac,
+    Unknown,
+}
+
 pub enum ServerMessage {
     Serv {
         ip_address: Ipv4Addr,
         sync_group_id: Option<String>,
     },
     Status(u32),
+    Stream {
+        autostart: bool,
+        format: AudioFormat,
+        threshold: u8,
+        output_threshold: u8,
+        replay_gain: f32,
+        server_port: u16,
+        server_ip: u32,
+        http_headers: String,
+    },
     Unrecognised(String),
     Error,
 }
 
 impl From<ClientMessage> for BytesMut {
     fn from(src: ClientMessage) -> BytesMut {
-        let mut buf = Vec::with_capacity(512);
+        let mut buf = Vec::with_capacity(1024);
 
         match src {
             ClientMessage::Helo {
@@ -170,19 +200,50 @@ impl From<BytesMut> for ServerMessage {
                 }
             }
             "strm" => {
-                let command = src.split_to(1)[0] as char;
+                if src.len() < 24 {
+                    return ServerMessage::Error;
+                }
+
+                let command = src[0] as char;
                 match command {
                     't' => {
-                        if src.len() < 23 {
-                            ServerMessage::Error
+                        let timestamp = src[14..18].into_buf().get_u32_be();
+                        ServerMessage::Status(timestamp)
+                    }
+
+                    's' => {
+                        let format = match src[2] as char {
+                            'p' => AudioFormat::Pcm,
+                            'm' => AudioFormat::Mp3,
+                            'f' => AudioFormat::Flac,
+                            'w' => AudioFormat::Wma,
+                            'o' => AudioFormat::Ogg,
+                            'a' => AudioFormat::Aac,
+                            'l' => AudioFormat::Alac,
+                            _ => AudioFormat::Unknown,
+                        };
+                        let replay_gain = replay_gain((
+                            src[14..16].into_buf().get_u16_be(),
+                            src[16..18].into_buf().get_u16_be(),
+                        ));
+                        let http_headers = if src.len() >= 24 {
+                            src[24..].into_iter().map(|c| *c as char).collect()
                         } else {
-                            let src = src.take();
-                            let timestamp = src[14..18].into_buf().get_u32_be();
-                            ServerMessage::Status(timestamp)
+                            String::new()
+                        };
+                        ServerMessage::Stream {
+                            autostart: src[1] == b'1' || src[1] == b'3',
+                            format: format,
+                            threshold: src[7],
+                            output_threshold: src[12],
+                            replay_gain: replay_gain,
+                            server_port: src[18..20].into_buf().get_u16_be(),
+                            server_ip: src[20..24].into_buf().get_u32_be(),
+                            http_headers: http_headers,
                         }
-                    },
+                    }
+
                     cmd @ _ => {
-                        src.take();
                         let mut msg = msg.to_owned();
                         msg.push('_');
                         msg.push(cmd);
@@ -193,4 +254,9 @@ impl From<BytesMut> for ServerMessage {
             cmd @ _ => ServerMessage::Unrecognised(cmd.to_owned()),
         }
     }
+}
+
+fn replay_gain(gain: (u16, u16)) -> f32 {
+    const MULT: u32 = 65536;
+    (gain.0 as u32 * MULT + gain.1 as u32) as f32 / MULT as f32
 }

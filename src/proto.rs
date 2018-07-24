@@ -34,6 +34,8 @@ impl Actor for Proto {
             "flc",
             "ogg",
             "mp3",
+            "wma",
+            "aac",
             "ModelName=Storm",
             "AccuratePlayPoints=1",
             "HasDigitalOut=1",
@@ -80,19 +82,26 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
             }
             codec::ServerMessage::Status(timestamp) => {
                 info!("Got status request");
-                let mut statdata = self.stat_data;
-                statdata.timestamp = timestamp;
-                statdata.jiffies = self.jiffies();
-                let stat = codec::ClientMessage::Stat {
-                    event_code: "STMt".to_owned(),
-                    stat_data: statdata,
-                };
-                self.framed.write(stat);
+                self.stat_data.timestamp = timestamp;
+                self.stat_data.jiffies = self.jiffies();
+                self.framed.write(self.stat_data.make_stat_message("STMt"));
+            }
+            codec::ServerMessage::Stream {
+                autostart,
+                format,
+                threshold,
+                output_threshold,
+                replay_gain,
+                server_port,
+                server_ip,
+                http_headers,
+            } => {
+                info!("Got Stream message\n\thttp: {}", http_headers);
             }
             codec::ServerMessage::Unrecognised(msg) => {
                 warn!("Unrecognised message: {}", msg);
             }
-            _ => {}
+            _ => ()
         }
     }
 }
@@ -144,7 +153,7 @@ fn spawn_signal_handler() {
                 info!("Received TERM signal, exiting");
                 System::current().stop();
                 future::ok(())
-            })
+            }),
     );
 }
 
