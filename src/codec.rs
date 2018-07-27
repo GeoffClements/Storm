@@ -1,5 +1,6 @@
 use bytes::{Buf, BufMut, BytesMut, IntoBuf};
 use tokio_codec;
+use mac_address;
 
 use std::convert::From;
 use std::io;
@@ -48,7 +49,7 @@ pub enum ClientMessage {
     Helo {
         device_id: u8,
         revision: u8,
-        mac: [u8; 6],
+        mac: mac_address::MacAddress,
         uuid: [u8; 16],
         wlan_channel_list: u16,
         bytes_received: u64,
@@ -109,7 +110,7 @@ pub enum ServerMessage {
         format: AudioFormat,
         threshold: u8,
         output_threshold: u8,
-        replay_gain: f32,
+        replay_gain: f64,
         server_port: u16,
         server_ip: u32,
         http_headers: String,
@@ -135,7 +136,7 @@ impl From<ClientMessage> for BytesMut {
                 buf.put("HELO".as_bytes());
                 buf.put_u8(device_id);
                 buf.put_u8(revision);
-                buf.put(mac.as_ref());
+                buf.put(mac.bytes().as_ref());
                 buf.put(uuid.as_ref());
                 buf.put_u16_be(wlan_channel_list);
                 buf.put_u64_be(bytes_received);
@@ -204,8 +205,7 @@ impl From<BytesMut> for ServerMessage {
                     return ServerMessage::Error;
                 }
 
-                let command = src[0] as char;
-                match command {
+                match src[0] as char {
                     't' => {
                         let timestamp = src[14..18].into_buf().get_u32_be();
                         ServerMessage::Status(timestamp)
@@ -222,7 +222,7 @@ impl From<BytesMut> for ServerMessage {
                             'l' => AudioFormat::Alac,
                             _ => AudioFormat::Unknown,
                         };
-                        let replay_gain = replay_gain((
+                        let replay_gain = scale_gain((
                             src[14..16].into_buf().get_u16_be(),
                             src[16..18].into_buf().get_u16_be(),
                         ));
@@ -256,7 +256,7 @@ impl From<BytesMut> for ServerMessage {
     }
 }
 
-fn replay_gain(gain: (u16, u16)) -> f32 {
-    const MULT: u32 = 65536;
-    (gain.0 as u32 * MULT + gain.1 as u32) as f32 / MULT as f32
+fn scale_gain(gain: (u16, u16)) -> f64 {
+    const FSD: f64 = 65535.0 * 65536.0 + 65535.0;
+    FSD / (gain.0 as u32 * 65536  + gain.1 as u32) as f64
 }

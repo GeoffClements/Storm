@@ -11,6 +11,7 @@ extern crate futures;
 extern crate bytes;
 extern crate actix;
 extern crate rand;
+extern crate mac_address;
 
 mod proto;
 mod codec;

@@ -9,6 +9,7 @@ use tokio_io::AsyncRead;
 use tokio_signal::unix::{Signal, SIGTERM};
 use tokio_tcp::TcpStream;
 use tokio_timer;
+use mac_address;
 
 use codec;
 
@@ -46,10 +47,13 @@ impl Actor for Proto {
             caps.push(format!("SyncgroupID={}", sync_group));
         }
 
+        let mac = get_mac();
+        info!("Using MAC address: {}", mac);
+
         let helo = codec::ClientMessage::Helo {
             device_id: 12,
             revision: 0,
-            mac: random_mac(),
+            mac: mac,
             uuid: [0; 16],
             wlan_channel_list: 0,
             bytes_received: 0,
@@ -96,7 +100,7 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 server_ip,
                 http_headers,
             } => {
-                info!("Got Stream message\n\thttp: {}", http_headers);
+                info!("Got Stream message\n\thttp: {}\n\tThreshold: {}", http_headers, threshold);
             }
             codec::ServerMessage::Unrecognised(msg) => {
                 warn!("Unrecognised message: {}", msg);
@@ -209,7 +213,16 @@ pub fn discover() -> io::Result<Ipv4Addr> {
     }
 }
 
-fn random_mac() -> [u8; 6] {
+fn get_mac() -> mac_address::MacAddress {
+    match mac_address::get_mac_address() {
+        Ok(mac) => {
+            mac.unwrap_or(random_mac())
+        }
+        _ => random_mac()
+    }
+}
+
+fn random_mac() -> mac_address::MacAddress {
     let mut rng = thread_rng();
     let mut mac = [0; 6];
     let mut mac_temp = Vec::new();
@@ -217,5 +230,5 @@ fn random_mac() -> [u8; 6] {
     (0..6).for_each(|_| mac_temp.push(rng.gen::<u8>()));
     mac_temp[0] |= 0b0000_0010;
     mac.copy_from_slice(&mac_temp);
-    mac
+    mac_address::MacAddress::new(mac)
 }
