@@ -112,7 +112,7 @@ pub enum ServerMessage {
         output_threshold: u8,
         replay_gain: f64,
         server_port: u16,
-        server_ip: u32,
+        server_ip: Ipv4Addr,
         http_headers: String,
     },
     Gain(f64, f64),
@@ -238,7 +238,7 @@ impl From<BytesMut> for ServerMessage {
                             output_threshold: src[12],
                             replay_gain: replay_gain,
                             server_port: src[18..20].into_buf().get_u16_be(),
-                            server_ip: src[20..24].into_buf().get_u32_be(),
+                            server_ip: Ipv4Addr::from(src[20..24].into_buf().get_u32_be()),
                             http_headers: http_headers,
                         }
                     }

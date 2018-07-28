@@ -1,6 +1,7 @@
 use actix;
 use actix::{Actor, ActorContext, Arbiter, AsyncContext, Context, System};
 use futures::{future, Future, Sink, Stream};
+use mac_address;
 use rand::{thread_rng, Rng};
 use tokio_codec::FramedRead;
 use tokio_core;
@@ -9,7 +10,6 @@ use tokio_io::AsyncRead;
 use tokio_signal::unix::{Signal, SIGTERM};
 use tokio_tcp::TcpStream;
 use tokio_timer;
-use mac_address;
 
 use codec;
 use player;
@@ -39,6 +39,7 @@ impl Actor for Proto {
             "mp3",
             "wma",
             "aac",
+            "Model=Storm",
             "ModelName=Storm",
             "AccuratePlayPoints=1",
             "HasDigitalOut=1",
@@ -101,11 +102,18 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 server_port,
                 server_ip,
                 http_headers,
-            } => {
-                info!("Got Stream message\n\thttp: {}\n\tThreshold: {}", http_headers, threshold);
-            }
+            } => self.player.do_send(player::PlayerControl::Stream {
+                autostart,
+                threshold,
+                output_threshold,
+                replay_gain,
+                server_port,
+                server_ip,
+                http_headers,
+            }),
             codec::ServerMessage::Gain(gain_left, gain_right) => {
-                self.player.do_send(player::PlayerControl::Gain(gain_left, gain_right));
+                self.player
+                    .do_send(player::PlayerControl::Gain(gain_left, gain_right));
             }
             codec::ServerMessage::Enable(enable) => {
                 self.player.do_send(player::PlayerControl::Enable(enable));
@@ -113,7 +121,7 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
             codec::ServerMessage::Unrecognised(msg) => {
                 warn!("Unrecognised message: {}", msg);
             }
-            _ => ()
+            _ => (),
         }
     }
 }
@@ -226,10 +234,8 @@ pub fn discover() -> io::Result<Ipv4Addr> {
 
 fn get_mac() -> mac_address::MacAddress {
     match mac_address::get_mac_address() {
-        Ok(mac) => {
-            mac.unwrap_or(random_mac())
-        }
-        _ => random_mac()
+        Ok(mac) => mac.unwrap_or(random_mac()),
+        _ => random_mac(),
     }
 }
 
