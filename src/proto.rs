@@ -12,6 +12,7 @@ use tokio_timer;
 use mac_address;
 
 use codec;
+use player;
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -21,6 +22,7 @@ struct Proto {
     sync_group_id: Option<String>,
     creation_time: Instant,
     stat_data: codec::StatData,
+    player: actix::Addr<player::Player>,
     framed: actix::io::FramedWrite<WriteHalf<TcpStream>, codec::SlimCodec>,
 }
 
@@ -102,6 +104,12 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
             } => {
                 info!("Got Stream message\n\thttp: {}\n\tThreshold: {}", http_headers, threshold);
             }
+            codec::ServerMessage::Gain(gain_left, gain_right) => {
+                self.player.do_send(player::PlayerControl::Gain(gain_left, gain_right));
+            }
+            codec::ServerMessage::Enable(enable) => {
+                self.player.do_send(player::PlayerControl::Enable(enable));
+            }
             codec::ServerMessage::Unrecognised(msg) => {
                 warn!("Unrecognised message: {}", msg);
             }
@@ -129,6 +137,8 @@ fn spawn_proto(server_ip: Ipv4Addr, sync_group: Option<String>) {
     Arbiter::spawn(
         TcpStream::connect(&addr)
             .and_then(move |stream| {
+                let player = player::Player::new();
+
                 Proto::create(move |ctx| {
                     let (r, w) = stream.split();
                     ctx.add_stream(FramedRead::new(r, codec::SlimCodec));
@@ -136,6 +146,7 @@ fn spawn_proto(server_ip: Ipv4Addr, sync_group: Option<String>) {
                         sync_group_id: sync_group,
                         creation_time: Instant::now(),
                         stat_data: codec::StatData::default(),
+                        player: player.start(),
                         framed: actix::io::FramedWrite::new(w, codec::SlimCodec, ctx),
                     }
                 });

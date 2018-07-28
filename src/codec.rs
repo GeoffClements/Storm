@@ -1,6 +1,6 @@
 use bytes::{Buf, BufMut, BytesMut, IntoBuf};
-use tokio_codec;
 use mac_address;
+use tokio_codec;
 
 use std::convert::From;
 use std::io;
@@ -115,6 +115,8 @@ pub enum ServerMessage {
         server_ip: u32,
         http_headers: String,
     },
+    Gain(f64, f64),
+    Enable(bool),
     Unrecognised(String),
     Error,
 }
@@ -176,6 +178,7 @@ impl From<ClientMessage> for BytesMut {
 
 impl From<BytesMut> for ServerMessage {
     fn from(mut src: BytesMut) -> ServerMessage {
+        const GAIN_FACTOR: f64 = 65536.0;
         let msg: String = src.split_to(4).into_iter().map(|c| c as char).collect();
 
         match msg.as_str() {
@@ -222,10 +225,7 @@ impl From<BytesMut> for ServerMessage {
                             'l' => AudioFormat::Alac,
                             _ => AudioFormat::Unknown,
                         };
-                        let replay_gain = scale_gain((
-                            src[14..16].into_buf().get_u16_be(),
-                            src[16..18].into_buf().get_u16_be(),
-                        ));
+                        let replay_gain = src[14..18].into_buf().get_u32_be() as f64 / GAIN_FACTOR;
                         let http_headers = if src.len() >= 24 {
                             src[24..].into_iter().map(|c| *c as char).collect()
                         } else {
@@ -251,12 +251,12 @@ impl From<BytesMut> for ServerMessage {
                     }
                 }
             }
+            "aude" => ServerMessage::Enable(!(src[1].into_buf().get_u8() == 0)),
+            "audg" => ServerMessage::Gain(
+                src[10..14].into_buf().get_u32_be() as f64 / GAIN_FACTOR,
+                src[14..18].into_buf().get_u32_be() as f64 / GAIN_FACTOR,
+            ),
             cmd @ _ => ServerMessage::Unrecognised(cmd.to_owned()),
         }
     }
-}
-
-fn scale_gain(gain: (u16, u16)) -> f64 {
-    const FSD: f64 = 65535.0 * 65536.0 + 65535.0;
-    FSD / (gain.0 as u32 * 65536  + gain.1 as u32) as f64
 }

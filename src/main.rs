@@ -12,9 +12,11 @@ extern crate bytes;
 extern crate actix;
 extern crate rand;
 extern crate mac_address;
+extern crate gstreamer as gst;
 
 mod proto;
 mod codec;
+mod player;
 
 use log::LevelFilter;
 
