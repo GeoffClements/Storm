@@ -18,10 +18,11 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
-struct Proto {
+pub struct Proto {
     sync_group_id: Option<String>,
     creation_time: Instant,
     stat_data: codec::StatData,
+    server_ip: Ipv4Addr,
     player: actix::Addr<player::Player>,
     framed: actix::io::FramedWrite<WriteHalf<TcpStream>, codec::SlimCodec>,
 }
@@ -109,6 +110,7 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 replay_gain,
                 server_port,
                 server_ip,
+                control_ip: self.server_ip,
                 http_headers,
             }),
             codec::ServerMessage::Gain(gain_left, gain_right) => {
@@ -145,15 +147,15 @@ fn spawn_proto(server_ip: Ipv4Addr, sync_group: Option<String>) {
     Arbiter::spawn(
         TcpStream::connect(&addr)
             .and_then(move |stream| {
-                let player = player::Player::new();
-
                 Proto::create(move |ctx| {
+                    let player = player::Player::new(ctx.address());
                     let (r, w) = stream.split();
                     ctx.add_stream(FramedRead::new(r, codec::SlimCodec));
                     Proto {
                         sync_group_id: sync_group,
                         creation_time: Instant::now(),
                         stat_data: codec::StatData::default(),
+                        server_ip: server_ip,
                         player: player.start(),
                         framed: actix::io::FramedWrite::new(w, codec::SlimCodec, ctx),
                     }

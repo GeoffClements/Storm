@@ -14,8 +14,6 @@ extern crate rand;
 extern crate mac_address;
 extern crate gstreamer as gst;
 
-use gst::prelude::*;
-
 mod proto;
 mod codec;
 mod player;
