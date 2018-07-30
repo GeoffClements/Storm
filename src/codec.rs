@@ -117,6 +117,7 @@ pub enum ServerMessage {
     },
     Gain(f64, f64),
     Enable(bool),
+    Stop,
     Unrecognised(String),
     Error,
 }
@@ -242,6 +243,8 @@ impl From<BytesMut> for ServerMessage {
                             http_headers: http_headers,
                         }
                     }
+
+                    'q' => ServerMessage::Stop,
 
                     cmd @ _ => {
                         let mut msg = msg.to_owned();

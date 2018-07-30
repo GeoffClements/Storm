@@ -103,16 +103,19 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 server_port,
                 server_ip,
                 http_headers,
-            } => self.player.do_send(player::PlayerControl::Stream {
-                autostart,
-                threshold,
-                output_threshold,
-                replay_gain,
-                server_port,
-                server_ip,
-                control_ip: self.server_ip,
-                http_headers,
-            }),
+            } => {
+                self.framed.write(self.stat_data.make_stat_message("STMc"));
+                self.player.do_send(player::PlayerControl::Stream {
+                    autostart,
+                    threshold,
+                    output_threshold,
+                    replay_gain,
+                    server_port,
+                    server_ip,
+                    control_ip: self.server_ip,
+                    http_headers,
+                })
+            }
             codec::ServerMessage::Gain(gain_left, gain_right) => {
                 self.player
                     .do_send(player::PlayerControl::Gain(gain_left, gain_right));
@@ -120,10 +123,25 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
             codec::ServerMessage::Enable(enable) => {
                 self.player.do_send(player::PlayerControl::Enable(enable));
             }
+            codec::ServerMessage::Stop => {
+                self.player.do_send(player::PlayerControl::Stop);
+            }
             codec::ServerMessage::Unrecognised(msg) => {
                 warn!("Unrecognised message: {}", msg);
             }
             _ => (),
+        }
+    }
+}
+
+impl actix::Handler<player::PlayerMessages> for Proto {
+    type Result = ();
+
+    fn handle(&mut self, msg: player::PlayerMessages, _ctx: &mut actix::Context<Self>) {
+        match msg {
+            player::PlayerMessages::Flushed => {
+                self.framed.write(self.stat_data.make_stat_message("STMf"));
+            }
         }
     }
 }

@@ -4,6 +4,8 @@ use gst::prelude::*;
 
 use proto;
 
+use std::collections::HashMap;
+use std::iter::FromIterator;
 use std::net::Ipv4Addr;
 
 pub enum PlayerControl {
@@ -19,9 +21,18 @@ pub enum PlayerControl {
         control_ip: Ipv4Addr,
         http_headers: String,
     },
+    Stop,
 }
 
 impl actix::Message for PlayerControl {
+    type Result = ();
+}
+
+pub enum PlayerMessages {
+    Flushed,
+}
+
+impl actix::Message for PlayerMessages {
     type Result = ();
 }
 
@@ -83,33 +94,64 @@ impl actix::Handler<PlayerControl> for Player {
             } => {
                 info!("Got stream request");
 
-                // TODO: Too many unwraps
-                let source = gst::ElementFactory::make("souphttpsrc", "source").unwrap();
-                let counter = gst::ElementFactory::make("identity", "counter").unwrap();
-                let ibuf = gst::ElementFactory::make("queue", "ibuf").unwrap();
-                let decoder = gst::ElementFactory::make("decodebin", "decoder").unwrap();
-                let converter = gst::ElementFactory::make("audioconvert", "converter").unwrap();
-                let resampler = gst::ElementFactory::make("audioresample", "resampler").unwrap();
-                let volume = gst::ElementFactory::make("volume", "volume").unwrap();
-                let obuf = gst::ElementFactory::make("queue", "obuf").unwrap();
-                let sink = gst::ElementFactory::make("autoaudiosink", "sink").unwrap();
+                let mut elements = HashMap::new();
+                elements.extend(vec![
+                    ("source", gst::ElementFactory::make("souphttpsrc", "source")),
+                    ("counter", gst::ElementFactory::make("identity", "counter")),
+                    ("ibuf", gst::ElementFactory::make("queue", "ibuf")),
+                    ("decoder", gst::ElementFactory::make("decodebin", "decoder")),
+                    (
+                        "converter",
+                        gst::ElementFactory::make("audioconvert", "converter"),
+                    ),
+                    (
+                        "resampler",
+                        gst::ElementFactory::make("audioresample", "resampler"),
+                    ),
+                    ("volume", gst::ElementFactory::make("volume", "volume")),
+                    ("obuf", gst::ElementFactory::make("queue", "obuf")),
+                    ("sink", gst::ElementFactory::make("autoaudiosink", "sink")),
+                ]);
+
+                if elements.values().any(|e| e.is_none()) {
+                    error!("Unable to instnciate stream elements");
+                    return;
+                }
+
+                // From this point on element unwraps are safe
+
+                let elements: HashMap<&str, gst::Element> =
+                    elements.into_iter().map(|(k, v)| (k, v.unwrap())).collect();
 
                 let pipeline = gst::Pipeline::new("Storm Player");
-                pipeline
-                    .add_many(&[
-                        &source, &counter, &ibuf, &decoder, &volume, &converter, &resampler, &obuf,
-                        &sink,
-                    ])
-                    .unwrap();
+                for element in elements.values() {
+                    if let Err(_) = pipeline.add(element) {
+                        error!("Error adding elements to pipeline");
+                        return;
+                    }
+                }
 
-                source.link(&counter).unwrap();
-                counter.link(&ibuf).unwrap();
-                ibuf.link(&decoder).unwrap();
-                // decoder.link(&converter).unwrap();
-                converter.link(&resampler).unwrap();
-                resampler.link(&volume).unwrap();
-                volume.link(&obuf).unwrap();
-                obuf.link(&sink).unwrap();
+                for elems in ["source", "counter", "ibuf", "decoder"].windows(2) {
+                    if let Err(_) = elements
+                        .get(elems[0])
+                        .unwrap()
+                        .link(elements.get(elems[1]).unwrap())
+                    {
+                        error!("Cannot link elements");
+                        return;
+                    }
+                }
+
+                for elems in ["converter", "resampler", "volume", "obuf", "sink"].windows(2) {
+                    if let Err(_) = elements
+                        .get(elems[0])
+                        .unwrap()
+                        .link(elements.get(elems[1]).unwrap())
+                    {
+                        error!("Cannot link elements");
+                        return;
+                    }
+                }
 
                 let server_ip = if server_ip == Ipv4Addr::new(0, 0, 0, 0) {
                     control_ip
@@ -127,6 +169,7 @@ impl actix::Handler<PlayerControl> for Player {
 
                 info!("http://{}:{}{}", server_ip, server_port, get);
 
+                let source = elements.get("source").unwrap();
                 source
                     .set_property(
                         "location",
@@ -137,27 +180,18 @@ impl actix::Handler<PlayerControl> for Player {
                 source
                     .set_property("user-agent", &"Storm".to_owned())
                     .unwrap();
+
+                let volume = elements.get("volume").unwrap();
                 volume.set_property("volume", &self.gain).unwrap();
                 volume.set_property("mute", &!self.enable).unwrap();
 
-                let pipeline_weak = pipeline.downgrade();
-                let decoder_weak = decoder.downgrade();
+                let decoder = elements.get("decoder").unwrap();
+                let converter_weak = elements.get("converter").unwrap().downgrade();
                 decoder.connect_pad_added(move |_, src_pad| {
-                    let pipeline = match pipeline_weak.upgrade() {
-                        Some(pipeline) => pipeline,
+                    let converter = match converter_weak.upgrade() {
+                        Some(converter) => converter,
                         None => return,
                     };
-
-                    let decoder = match decoder_weak.upgrade() {
-                        Some(convert) => convert,
-                        None => return,
-                    };
-
-                    info!(
-                        "Received new pad {} from {}",
-                        src_pad.get_name(),
-                        pipeline.get_name()
-                    );
 
                     let sink_pad = converter
                         .get_static_pad("sink")
@@ -183,10 +217,19 @@ impl actix::Handler<PlayerControl> for Player {
                     let _ = src_pad.link(&sink_pad);
                 });
 
-                if pipeline.set_state(gst::State::Playing) == gst::StateChangeReturn::Failure {
-                    error!("Unable to set the pipeline to the Playing state");
+                if autostart {
+                    if pipeline.set_state(gst::State::Playing) == gst::StateChangeReturn::Failure {
+                        error!("Unable to set the pipeline to the Playing state");
+                    }
                 }
                 self.pipeline = Some(pipeline);
+            }
+            PlayerControl::Stop => {
+                if let Some(pipeline) = self.pipeline.take() {
+                    if pipeline.set_state(gst::State::Null) != gst::StateChangeReturn::Failure {
+                        self.proto.do_send(PlayerMessages::Flushed);
+                    }
+                }
             }
         }
     }
