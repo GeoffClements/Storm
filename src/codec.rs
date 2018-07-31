@@ -108,8 +108,8 @@ pub enum ServerMessage {
     Stream {
         autostart: bool,
         format: AudioFormat,
-        threshold: u8,
-        output_threshold: u8,
+        threshold: u32,
+        output_threshold: u64,
         replay_gain: f64,
         server_port: u16,
         server_ip: Ipv4Addr,
@@ -118,6 +118,8 @@ pub enum ServerMessage {
     Gain(f64, f64),
     Enable(bool),
     Stop,
+    Pause(u32),
+    Unpause(u32),
     Unrecognised(String),
     Error,
 }
@@ -235,8 +237,8 @@ impl From<BytesMut> for ServerMessage {
                         ServerMessage::Stream {
                             autostart: src[1] == b'1' || src[1] == b'3',
                             format: format,
-                            threshold: src[7],
-                            output_threshold: src[12],
+                            threshold: src[7] as u32,
+                            output_threshold: src[12] as u64 * 100_000_000,
                             replay_gain: replay_gain,
                             server_port: src[18..20].into_buf().get_u16_be(),
                             server_ip: Ipv4Addr::from(src[20..24].into_buf().get_u32_be()),
@@ -245,6 +247,16 @@ impl From<BytesMut> for ServerMessage {
                     }
 
                     'q' => ServerMessage::Stop,
+
+                    'p' => {
+                        let timestamp = src[14..18].into_buf().get_u32_be();
+                        ServerMessage::Pause(timestamp)
+                    }
+
+                    'u' => {
+                        let timestamp = src[14..18].into_buf().get_u32_be();
+                        ServerMessage::Unpause(timestamp)
+                    }
 
                     cmd @ _ => {
                         let mut msg = msg.to_owned();

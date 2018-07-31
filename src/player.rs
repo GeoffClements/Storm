@@ -5,7 +5,6 @@ use gst::prelude::*;
 use proto;
 
 use std::collections::HashMap;
-use std::iter::FromIterator;
 use std::net::Ipv4Addr;
 
 pub enum PlayerControl {
@@ -13,8 +12,8 @@ pub enum PlayerControl {
     Enable(bool),
     Stream {
         autostart: bool,
-        threshold: u8,
-        output_threshold: u8,
+        threshold: u32,
+        output_threshold: u64,
         replay_gain: f64,
         server_port: u16,
         server_ip: Ipv4Addr,
@@ -22,6 +21,8 @@ pub enum PlayerControl {
         http_headers: String,
     },
     Stop,
+    Pause,
+    Unpause,
 }
 
 impl actix::Message for PlayerControl {
@@ -30,6 +31,8 @@ impl actix::Message for PlayerControl {
 
 pub enum PlayerMessages {
     Flushed,
+    Paused,
+    Unpaused,
 }
 
 impl actix::Message for PlayerMessages {
@@ -52,6 +55,33 @@ impl Player {
             pipeline: None,
         }
     }
+
+    fn stream_stop(&mut self) {
+        if let Some(pipeline) = self.pipeline.take() {
+            if pipeline.set_state(gst::State::Null) != gst::StateChangeReturn::Failure {
+                info!("Stopping stream");
+                self.proto.do_send(PlayerMessages::Flushed);
+            }
+        }
+    }
+
+    fn stream_pause(&mut self) {
+        if let Some(ref pipeline) = self.pipeline {
+            if pipeline.set_state(gst::State::Paused) != gst::StateChangeReturn::Failure {
+                info!("Pausing stream");
+                self.proto.do_send(PlayerMessages::Paused);
+            }
+        }
+    }
+
+    fn stream_unpause(&mut self) {
+        if let Some(ref pipeline) = self.pipeline {
+            if pipeline.set_state(gst::State::Playing) != gst::StateChangeReturn::Failure {
+                info!("Resuming stream");
+                self.proto.do_send(PlayerMessages::Unpaused);
+            }
+        }
+    }
 }
 
 impl actix::Actor for Player {
@@ -69,6 +99,9 @@ impl actix::Handler<PlayerControl> for Player {
     type Result = ();
 
     fn handle(&mut self, msg: PlayerControl, _ctx: &mut actix::Context<Self>) {
+        const IBUF_SIZE: u32 = 2 * 1024 * 1024;
+        const OBUF_SIZE: u64 = 10_000_000_000;
+
         match msg {
             PlayerControl::Gain(gain_left, gain_right) => {
                 self.gain = if gain_left > gain_right {
@@ -78,10 +111,12 @@ impl actix::Handler<PlayerControl> for Player {
                 };
                 info!("Setting gain to {}", self.gain);
             }
+
             PlayerControl::Enable(enable) => {
                 info!("Setting enable to {}", enable);
                 self.enable = enable;
             }
+
             PlayerControl::Stream {
                 autostart,
                 threshold,
@@ -176,13 +211,29 @@ impl actix::Handler<PlayerControl> for Player {
                         &format!("http://{}:{}{}", server_ip, server_port, get),
                     )
                     .unwrap();
-                // source.set_property("extra-headers", &x_head).unwrap();
                 source
                     .set_property("user-agent", &"Storm".to_owned())
                     .unwrap();
 
+                let ibuf = elements.get("ibuf").unwrap();
+                ibuf.set_property("max-size-bytes", &IBUF_SIZE).unwrap();
+                ibuf.set_property("min-threshold-bytes", &threshold)
+                    .unwrap();
+
+                let obuf = elements.get("obuf").unwrap();
+                obuf.set_property("max-size-time", &OBUF_SIZE).unwrap();
+                obuf.set_property("min-threshold-time", &output_threshold)
+                    .unwrap();
+
+                info!("Threshold: {}\nOutput threshold: {}", threshold, output_threshold);
+
                 let volume = elements.get("volume").unwrap();
-                volume.set_property("volume", &self.gain).unwrap();
+                let gain = if replay_gain < 0.0001 {
+                    self.gain
+                } else {
+                    replay_gain
+                };
+                volume.set_property("volume", &gain).unwrap();
                 volume.set_property("mute", &!self.enable).unwrap();
 
                 let decoder = elements.get("decoder").unwrap();
@@ -209,12 +260,9 @@ impl actix::Handler<PlayerControl> for Player {
                         .expect("Failed to get first structure of caps.");
                     let new_pad_type = new_pad_struct.get_name();
 
-                    let is_audio = new_pad_type.starts_with("audio/x-raw");
-                    if !is_audio {
-                        return;
+                    if new_pad_type.starts_with("audio/x-raw") {
+                        let _ = src_pad.link(&sink_pad);
                     }
-
-                    let _ = src_pad.link(&sink_pad);
                 });
 
                 if autostart {
@@ -224,12 +272,19 @@ impl actix::Handler<PlayerControl> for Player {
                 }
                 self.pipeline = Some(pipeline);
             }
+
             PlayerControl::Stop => {
-                if let Some(pipeline) = self.pipeline.take() {
-                    if pipeline.set_state(gst::State::Null) != gst::StateChangeReturn::Failure {
-                        self.proto.do_send(PlayerMessages::Flushed);
-                    }
-                }
+                self.stream_stop();
+            }
+
+            // TODO: pause for fixed period
+            PlayerControl::Pause => {
+                self.stream_pause();
+            }
+
+            // TODO: unpause at time
+            PlayerControl::Unpause => {
+                self.stream_unpause();
             }
         }
     }

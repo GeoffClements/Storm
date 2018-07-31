@@ -88,12 +88,14 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 spawn_proto(ip_address, sync_group_id);
                 ctx.stop();
             }
+
             codec::ServerMessage::Status(timestamp) => {
                 info!("Got status request");
                 self.stat_data.timestamp = timestamp;
                 self.stat_data.jiffies = self.jiffies();
                 self.framed.write(self.stat_data.make_stat_message("STMt"));
             }
+
             codec::ServerMessage::Stream {
                 autostart,
                 format,
@@ -116,19 +118,32 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                     http_headers,
                 })
             }
+
             codec::ServerMessage::Gain(gain_left, gain_right) => {
                 self.player
                     .do_send(player::PlayerControl::Gain(gain_left, gain_right));
             }
+
             codec::ServerMessage::Enable(enable) => {
                 self.player.do_send(player::PlayerControl::Enable(enable));
             }
+
             codec::ServerMessage::Stop => {
                 self.player.do_send(player::PlayerControl::Stop);
             }
+
             codec::ServerMessage::Unrecognised(msg) => {
                 warn!("Unrecognised message: {}", msg);
             }
+
+            codec::ServerMessage::Pause(..) => {
+                self.player.do_send(player::PlayerControl::Pause);
+            }
+
+            codec::ServerMessage::Unpause(..) => {
+                self.player.do_send(player::PlayerControl::Unpause);
+            }
+
             _ => (),
         }
     }
@@ -141,6 +156,14 @@ impl actix::Handler<player::PlayerMessages> for Proto {
         match msg {
             player::PlayerMessages::Flushed => {
                 self.framed.write(self.stat_data.make_stat_message("STMf"));
+            }
+
+            player::PlayerMessages::Paused => {
+                self.framed.write(self.stat_data.make_stat_message("STMp"));
+            }
+
+            player::PlayerMessages::Unpaused => {
+                self.framed.write(self.stat_data.make_stat_message("STMr"));
             }
         }
     }
