@@ -237,8 +237,8 @@ impl From<BytesMut> for ServerMessage {
                         ServerMessage::Stream {
                             autostart: src[1] == b'1' || src[1] == b'3',
                             format: format,
-                            threshold: src[7] as u32,
-                            output_threshold: src[12] as u64 * 100_000_000,
+                            threshold: src[7] as u32 * 1024, // bytes
+                            output_threshold: src[12] as u64 * 100_000_000, // nanoseconds
                             replay_gain: replay_gain,
                             server_port: src[18..20].into_buf().get_u16_be(),
                             server_ip: Ipv4Addr::from(src[20..24].into_buf().get_u32_be()),

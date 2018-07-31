@@ -98,9 +98,9 @@ impl actix::Actor for Player {
 impl actix::Handler<PlayerControl> for Player {
     type Result = ();
 
-    fn handle(&mut self, msg: PlayerControl, _ctx: &mut actix::Context<Self>) {
-        const IBUF_SIZE: u32 = 2 * 1024 * 1024;
-        const OBUF_SIZE: u64 = 10_000_000_000;
+    fn handle(&mut self, msg: PlayerControl, ctx: &mut actix::Context<Self>) {
+        const IBUF_SIZE: u32 = 2 * 1024 * 1024; // bytes
+        const OBUF_SIZE: u64 = 10_000_000_000; // nanoseconds
 
         match msg {
             PlayerControl::Gain(gain_left, gain_right) => {
