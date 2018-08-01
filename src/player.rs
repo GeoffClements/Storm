@@ -1,6 +1,7 @@
 use actix;
 use gst;
 use gst::prelude::*;
+use gst::MessageView;
 
 use proto;
 
@@ -33,6 +34,11 @@ pub enum PlayerMessages {
     Flushed,
     Paused,
     Unpaused,
+    Eos,
+    Established,
+    Headers,
+    Error,
+    Start,
 }
 
 impl actix::Message for PlayerMessages {
@@ -99,8 +105,8 @@ impl actix::Handler<PlayerControl> for Player {
     type Result = ();
 
     fn handle(&mut self, msg: PlayerControl, ctx: &mut actix::Context<Self>) {
-        const IBUF_SIZE: u32 = 2 * 1024 * 1024; // bytes
-        const OBUF_SIZE: u64 = 10_000_000_000; // nanoseconds
+        // const IBUF_SIZE: u32 = 2 * 1024 * 1024; // bytes
+        // const OBUF_SIZE: u64 = 10_000_000_000; // nanoseconds
 
         match msg {
             PlayerControl::Gain(gain_left, gain_right) => {
@@ -204,37 +210,36 @@ impl actix::Handler<PlayerControl> for Player {
 
                 info!("http://{}:{}{}", server_ip, server_port, get);
 
-                let source = elements.get("source").unwrap();
-                source
-                    .set_property(
-                        "location",
-                        &format!("http://{}:{}{}", server_ip, server_port, get),
-                    )
-                    .unwrap();
-                source
-                    .set_property("user-agent", &"Storm".to_owned())
-                    .unwrap();
+                if let Some(source) = elements.get("source") {
+                    source
+                        .set_property(
+                            "location",
+                            &format!("http://{}:{}{}", server_ip, server_port, get),
+                        )
+                        .unwrap();
+                    source
+                        .set_property("user-agent", &"Storm".to_owned())
+                        .unwrap();
+                }
 
-                let ibuf = elements.get("ibuf").unwrap();
-                ibuf.set_property("max-size-bytes", &IBUF_SIZE).unwrap();
-                ibuf.set_property("min-threshold-bytes", &threshold)
-                    .unwrap();
+                if let Some(ibuf) = elements.get("ibuf") {
+                    ibuf.set_property("max-size-bytes", &threshold).unwrap();
+                }
 
-                let obuf = elements.get("obuf").unwrap();
-                obuf.set_property("max-size-time", &OBUF_SIZE).unwrap();
-                obuf.set_property("min-threshold-time", &output_threshold)
-                    .unwrap();
+                if let Some(obuf) = elements.get("obuf") {
+                    obuf.set_property("max-size-time", &output_threshold)
+                        .unwrap();
+                }
 
-                info!("Threshold: {}\nOutput threshold: {}", threshold, output_threshold);
-
-                let volume = elements.get("volume").unwrap();
-                let gain = if replay_gain < 0.0001 {
-                    self.gain
-                } else {
-                    replay_gain
-                };
-                volume.set_property("volume", &gain).unwrap();
-                volume.set_property("mute", &!self.enable).unwrap();
+                if let Some(volume) = elements.get("volume") {
+                    let gain = if replay_gain < 0.0001 {
+                        self.gain
+                    } else {
+                        replay_gain
+                    };
+                    volume.set_property("volume", &gain).unwrap();
+                    volume.set_property("mute", &!self.enable).unwrap();
+                }
 
                 let decoder = elements.get("decoder").unwrap();
                 let converter_weak = elements.get("converter").unwrap().downgrade();
@@ -265,11 +270,69 @@ impl actix::Handler<PlayerControl> for Player {
                     }
                 });
 
+                let proto = self.proto.clone();
+                let bus = pipeline.get_bus().unwrap();
+                ::std::thread::spawn(move || loop {
+                    let msg = bus.timed_pop(gst::ClockTime::from_mseconds(100));
+                    match msg {
+                        Some(msg) => match msg.view() {
+                            MessageView::Error(error) => {
+                                error!(
+                                    "Stream error: {}",
+                                    if let Some(e) = error.get_debug() {
+                                        e
+                                    } else {
+                                        "undefined".to_owned()
+                                    }
+                                );
+                                proto.do_send(PlayerMessages::Error);
+                                break;
+                            }
+                            MessageView::Eos(..) => {
+                                proto.do_send(PlayerMessages::Eos);
+                                break;
+                            }
+                            MessageView::Element(element) => {
+                                if let Some(source) = element.get_src() {
+                                    if source.get_name() == "source" {
+                                        if let Some(structure) = element.get_structure() {
+                                            if structure.get_name() == "http-headers" {
+                                                proto.do_send(PlayerMessages::Established);
+                                                proto.do_send(PlayerMessages::Headers);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            MessageView::StateChanged(state) => {
+                                if let Some(source) = state.get_src() {
+                                    if source.get_name() == "source" {
+                                        if state.get_current() == gst::State::Null {
+                                            proto.do_send(PlayerMessages::Eos);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            MessageView::StreamStart(..) => {
+                                proto.do_send(PlayerMessages::Start);
+                            }
+
+                            // _ => info!("{:?}", msg),
+                            _ => (),
+                        },
+                        None => (),
+                    }
+                });
+
                 if autostart {
                     if pipeline.set_state(gst::State::Playing) == gst::StateChangeReturn::Failure {
                         error!("Unable to set the pipeline to the Playing state");
                     }
                 }
+
                 self.pipeline = Some(pipeline);
             }
 

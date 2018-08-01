@@ -165,6 +165,26 @@ impl actix::Handler<player::PlayerMessages> for Proto {
             player::PlayerMessages::Unpaused => {
                 self.framed.write(self.stat_data.make_stat_message("STMr"));
             }
+
+            player::PlayerMessages::Eos => {
+                self.framed.write(self.stat_data.make_stat_message("STMu"));
+            }
+            
+            player::PlayerMessages::Established => {
+                self.framed.write(self.stat_data.make_stat_message("STMe"));
+            }
+
+            player::PlayerMessages::Headers => {
+                self.framed.write(self.stat_data.make_stat_message("STMh"));
+            }
+
+            player::PlayerMessages::Error => {
+                self.framed.write(self.stat_data.make_stat_message("STMn"));
+            }
+            
+            player::PlayerMessages::Start => {
+                self.framed.write(self.stat_data.make_stat_message("STMs"));
+            }
         }
     }
 }
