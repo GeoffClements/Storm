@@ -98,7 +98,6 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
 
             codec::ServerMessage::Stream {
                 autostart,
-                format,
                 threshold,
                 output_threshold,
                 replay_gain,
@@ -132,10 +131,6 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 self.player.do_send(player::PlayerControl::Stop);
             }
 
-            codec::ServerMessage::Unrecognised(msg) => {
-                warn!("Unrecognised message: {}", msg);
-            }
-
             codec::ServerMessage::Pause(..) => {
                 self.player.do_send(player::PlayerControl::Pause);
             }
@@ -144,6 +139,10 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 self.player.do_send(player::PlayerControl::Unpause);
             }
 
+            codec::ServerMessage::Unrecognised(msg) => {
+                warn!("Unrecognised message: {}", msg);
+            }
+            
             _ => (),
         }
     }
@@ -169,21 +168,27 @@ impl actix::Handler<player::PlayerMessages> for Proto {
             player::PlayerMessages::Eos => {
                 self.framed.write(self.stat_data.make_stat_message("STMu"));
             }
-            
+
             player::PlayerMessages::Established => {
                 self.framed.write(self.stat_data.make_stat_message("STMe"));
             }
 
-            player::PlayerMessages::Headers => {
+            player::PlayerMessages::Headers(crlf) => {
+                self.stat_data.crlf = self.stat_data.crlf.wrapping_add(crlf);
                 self.framed.write(self.stat_data.make_stat_message("STMh"));
             }
 
             player::PlayerMessages::Error => {
                 self.framed.write(self.stat_data.make_stat_message("STMn"));
             }
-            
+
             player::PlayerMessages::Start => {
                 self.framed.write(self.stat_data.make_stat_message("STMs"));
+            }
+
+            player::PlayerMessages::Streamdata { position } => {
+                self.stat_data.elapsed_milliseconds = position as u32;
+                self.stat_data.elapsed_seconds = position as u32 / 1000;
             }
         }
     }

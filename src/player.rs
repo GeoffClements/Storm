@@ -36,9 +36,10 @@ pub enum PlayerMessages {
     Unpaused,
     Eos,
     Established,
-    Headers,
+    Headers(u8),
     Error,
     Start,
+    Streamdata { position: u64 },
 }
 
 impl actix::Message for PlayerMessages {
@@ -104,7 +105,7 @@ impl actix::Actor for Player {
 impl actix::Handler<PlayerControl> for Player {
     type Result = ();
 
-    fn handle(&mut self, msg: PlayerControl, ctx: &mut actix::Context<Self>) {
+    fn handle(&mut self, msg: PlayerControl, _ctx: &mut actix::Context<Self>) {
         // const IBUF_SIZE: u32 = 2 * 1024 * 1024; // bytes
         // const OBUF_SIZE: u64 = 10_000_000_000; // nanoseconds
 
@@ -164,7 +165,7 @@ impl actix::Handler<PlayerControl> for Player {
                 let elements: HashMap<&str, gst::Element> =
                     elements.into_iter().map(|(k, v)| (k, v.unwrap())).collect();
 
-                let pipeline = gst::Pipeline::new("Storm Player");
+                let pipeline = gst::Pipeline::new("stormpipe");
                 for element in elements.values() {
                     if let Err(_) = pipeline.add(element) {
                         error!("Error adding elements to pipeline");
@@ -272,8 +273,15 @@ impl actix::Handler<PlayerControl> for Player {
 
                 let proto = self.proto.clone();
                 let bus = pipeline.get_bus().unwrap();
+                let pipeline_weak = pipeline.downgrade();
                 ::std::thread::spawn(move || loop {
+                    let pipeline = match pipeline_weak.upgrade() {
+                        Some(pipeline) => pipeline,
+                        None => return,
+                    };
+
                     let msg = bus.timed_pop(gst::ClockTime::from_mseconds(100));
+                    // println!("{:?}", msg);
                     match msg {
                         Some(msg) => match msg.view() {
                             MessageView::Error(error) => {
@@ -298,7 +306,8 @@ impl actix::Handler<PlayerControl> for Player {
                                         if let Some(structure) = element.get_structure() {
                                             if structure.get_name() == "http-headers" {
                                                 proto.do_send(PlayerMessages::Established);
-                                                proto.do_send(PlayerMessages::Headers);
+                                                let crlf = structure.iter().count() as u8;
+                                                proto.do_send(PlayerMessages::Headers(crlf));
                                             }
                                         }
                                     }
@@ -309,7 +318,6 @@ impl actix::Handler<PlayerControl> for Player {
                                 if let Some(source) = state.get_src() {
                                     if source.get_name() == "source" {
                                         if state.get_current() == gst::State::Null {
-                                            proto.do_send(PlayerMessages::Eos);
                                             break;
                                         }
                                     }
@@ -320,10 +328,24 @@ impl actix::Handler<PlayerControl> for Player {
                                 proto.do_send(PlayerMessages::Start);
                             }
 
-                            // _ => info!("{:?}", msg),
                             _ => (),
                         },
-                        None => (),
+                        None => {
+                            let pos = {
+                                let mut q = gst::Query::new_position(gst::Format::Time);
+                                if pipeline.query(&mut q) {
+                                    Some(q.get_result())
+                                } else {
+                                    None
+                                }
+                            }.and_then(|pos| pos.try_into_time().ok());
+
+                            if let Some(pos) = pos {
+                                if let Some(millis) = pos.mseconds() {
+                                    proto.do_send(PlayerMessages::Streamdata { position: millis });
+                                }
+                            }
+                        }
                     }
                 });
 

@@ -63,20 +63,21 @@ pub enum ClientMessage {
     Bye(u8),
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct StatData {
-    pub buffer_size: u32,
-    pub fullness: u32,
-    pub bytes_received: u64,
-    pub sig_strength: u16,
+    pub crlf: u8,
+    buffer_size: u32,
+    fullness: u32,
+    bytes_received: u64,
+    sig_strength: u16,
     pub jiffies: u32,
-    pub output_buffer_size: u32,
-    pub output_buffer_fullness: u32,
+    output_buffer_size: u32,
+    output_buffer_fullness: u32,
     pub elapsed_seconds: u32,
-    pub voltage: u16,
+    voltage: u16,
     pub elapsed_milliseconds: u32,
     pub timestamp: u32,
-    pub error_code: u16,
+    error_code: u16,
 }
 
 impl StatData {
@@ -88,15 +89,24 @@ impl StatData {
     }
 }
 
-pub enum AudioFormat {
-    Pcm,
-    Mp3,
-    Flac,
-    Wma,
-    Ogg,
-    Aac,
-    Alac,
-    Unknown,
+impl Default for StatData {
+    fn default() -> Self {
+        StatData {
+            crlf: 0,
+            buffer_size: 256 * 256,
+            fullness: 0,
+            bytes_received: 0,
+            sig_strength: 0,
+            jiffies: 0,
+            output_buffer_size: 44100 * 4 * 10,
+            output_buffer_fullness: 0,
+            elapsed_seconds: 0,
+            voltage: 0,
+            elapsed_milliseconds: 0,
+            timestamp: 0,
+            error_code: 0,
+        }
+    }
 }
 
 pub enum ServerMessage {
@@ -107,7 +117,6 @@ pub enum ServerMessage {
     Status(u32),
     Stream {
         autostart: bool,
-        format: AudioFormat,
         threshold: u32,
         output_threshold: u64,
         replay_gain: f64,
@@ -157,6 +166,8 @@ impl From<ClientMessage> for BytesMut {
             } => {
                 buf.put("STAT".as_bytes());
                 buf.put(event_code.as_bytes());
+                buf.put_u8(stat_data.crlf);
+                buf.put_u16_be(0);
                 buf.put_u32_be(stat_data.buffer_size);
                 buf.put_u32_be(stat_data.fullness);
                 buf.put_u64_be(stat_data.bytes_received);
@@ -218,16 +229,6 @@ impl From<BytesMut> for ServerMessage {
                     }
 
                     's' => {
-                        let format = match src[2] as char {
-                            'p' => AudioFormat::Pcm,
-                            'm' => AudioFormat::Mp3,
-                            'f' => AudioFormat::Flac,
-                            'w' => AudioFormat::Wma,
-                            'o' => AudioFormat::Ogg,
-                            'a' => AudioFormat::Aac,
-                            'l' => AudioFormat::Alac,
-                            _ => AudioFormat::Unknown,
-                        };
                         let replay_gain = src[14..18].into_buf().get_u32_be() as f64 / GAIN_FACTOR;
                         let http_headers = if src.len() >= 24 {
                             src[24..].into_iter().map(|c| *c as char).collect()
@@ -236,7 +237,6 @@ impl From<BytesMut> for ServerMessage {
                         };
                         ServerMessage::Stream {
                             autostart: src[1] == b'1' || src[1] == b'3',
-                            format: format,
                             threshold: src[7] as u32 * 1024, // bytes
                             output_threshold: src[12] as u64 * 100_000_000, // nanoseconds
                             replay_gain: replay_gain,
