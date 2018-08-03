@@ -39,7 +39,12 @@ pub enum PlayerMessages {
     Headers(u8),
     Error,
     Start,
-    Streamdata { position: u64 },
+    Streamdata {
+        position: u64,
+        fullness: u32,
+        output_buffer_fullness: u32,
+    },
+    Bufsize(usize),
 }
 
 impl actix::Message for PlayerMessages {
@@ -139,7 +144,6 @@ impl actix::Handler<PlayerControl> for Player {
                 let mut elements = HashMap::new();
                 elements.extend(vec![
                     ("source", gst::ElementFactory::make("souphttpsrc", "source")),
-                    ("counter", gst::ElementFactory::make("identity", "counter")),
                     ("ibuf", gst::ElementFactory::make("queue", "ibuf")),
                     ("decoder", gst::ElementFactory::make("decodebin", "decoder")),
                     (
@@ -173,7 +177,7 @@ impl actix::Handler<PlayerControl> for Player {
                     }
                 }
 
-                for elems in ["source", "counter", "ibuf", "decoder"].windows(2) {
+                for elems in ["source", "ibuf", "decoder"].windows(2) {
                     if let Err(_) = elements
                         .get(elems[0])
                         .unwrap()
@@ -201,13 +205,15 @@ impl actix::Handler<PlayerControl> for Player {
                     server_ip
                 };
 
-                let get = http_headers
-                    .lines()
-                    .nth(0)
-                    .unwrap()
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap();
+                let get = if let Some(line) = http_headers.lines().nth(0) {
+                    if let Some(get) = line.split_whitespace().nth(1) {
+                        get.to_owned()
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
 
                 info!("http://{}:{}{}", server_ip, server_port, get);
 
@@ -221,6 +227,26 @@ impl actix::Handler<PlayerControl> for Player {
                     source
                         .set_property("user-agent", &"Storm".to_owned())
                         .unwrap();
+
+                    if let Some(src_pad) = source.get_static_pad("src") {
+                        let proto = self.proto.clone();
+                        src_pad.add_probe(
+                            gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+                            move |_, probe_info| {
+                                let buf_size = match probe_info.data {
+                                    Some(gst::PadProbeData::Buffer(ref buffer)) => {
+                                        buffer.get_size()
+                                    }
+                                    Some(gst::PadProbeData::BufferList(ref buflist)) => {
+                                        buflist.iter().map(|b| b.get_size()).sum()
+                                    }
+                                    _ => 0,
+                                };
+                                proto.do_send(PlayerMessages::Bufsize(buf_size));
+                                gst::PadProbeReturn::Ok
+                            },
+                        );
+                    }
                 }
 
                 if let Some(ibuf) = elements.get("ibuf") {
@@ -340,11 +366,41 @@ impl actix::Handler<PlayerControl> for Player {
                                 }
                             }.and_then(|pos| pos.try_into_time().ok());
 
-                            if let Some(pos) = pos {
+                            let pos = if let Some(pos) = pos {
                                 if let Some(millis) = pos.mseconds() {
-                                    proto.do_send(PlayerMessages::Streamdata { position: millis });
+                                    millis
+                                } else {
+                                    0
                                 }
-                            }
+                            } else {
+                                0
+                            };
+
+                            let ibuf_fullness = if let Some(ibuf) = pipeline.get_by_name("ibuf") {
+                                if let Ok(bytes) = ibuf.get_property("current-level-bytes") {
+                                    bytes.get().unwrap_or(0)
+                                } else {
+                                    0
+                                }
+                            } else {
+                                0
+                            };
+
+                            let obuf_fullness = if let Some(obuf) = pipeline.get_by_name("obuf") {
+                                if let Ok(bytes) = obuf.get_property("current-level-bytes") {
+                                    bytes.get().unwrap_or(0)
+                                } else {
+                                    0
+                                }
+                            } else {
+                                0
+                            };
+
+                            proto.do_send(PlayerMessages::Streamdata {
+                                position: pos,
+                                fullness: ibuf_fullness,
+                                output_buffer_fullness: obuf_fullness,
+                            });
                         }
                     }
                 });

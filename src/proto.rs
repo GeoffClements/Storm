@@ -105,6 +105,11 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 server_ip,
                 http_headers,
             } => {
+                self.stat_data.elapsed_milliseconds = 0;
+                self.stat_data.elapsed_seconds = 0;
+                self.stat_data.fullness = 0;
+                self.stat_data.output_buffer_fullness = 0;
+                self.stat_data.crlf = 0;
                 self.framed.write(self.stat_data.make_stat_message("STMc"));
                 self.player.do_send(player::PlayerControl::Stream {
                     autostart,
@@ -142,7 +147,7 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
             codec::ServerMessage::Unrecognised(msg) => {
                 warn!("Unrecognised message: {}", msg);
             }
-            
+
             _ => (),
         }
     }
@@ -167,6 +172,7 @@ impl actix::Handler<player::PlayerMessages> for Proto {
 
             player::PlayerMessages::Eos => {
                 self.framed.write(self.stat_data.make_stat_message("STMu"));
+                self.player.do_send(player::PlayerControl::Stop);
             }
 
             player::PlayerMessages::Established => {
@@ -174,7 +180,7 @@ impl actix::Handler<player::PlayerMessages> for Proto {
             }
 
             player::PlayerMessages::Headers(crlf) => {
-                self.stat_data.crlf = self.stat_data.crlf.wrapping_add(crlf);
+                self.stat_data.crlf = crlf;
                 self.framed.write(self.stat_data.make_stat_message("STMh"));
             }
 
@@ -186,9 +192,20 @@ impl actix::Handler<player::PlayerMessages> for Proto {
                 self.framed.write(self.stat_data.make_stat_message("STMs"));
             }
 
-            player::PlayerMessages::Streamdata { position } => {
+            player::PlayerMessages::Streamdata {
+                position,
+                fullness,
+                output_buffer_fullness,
+            } => {
                 self.stat_data.elapsed_milliseconds = position as u32;
                 self.stat_data.elapsed_seconds = position as u32 / 1000;
+                self.stat_data.fullness = fullness;
+                self.stat_data.output_buffer_fullness = output_buffer_fullness;
+            }
+
+            player::PlayerMessages::Bufsize(buf_size) => {
+                self.stat_data.bytes_received =
+                    self.stat_data.bytes_received.wrapping_add(buf_size as u64);
             }
         }
     }
