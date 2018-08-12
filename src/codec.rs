@@ -164,6 +164,7 @@ impl From<ClientMessage> for BytesMut {
                 event_code,
                 stat_data,
             } => {
+                info!("Sending STAT_{}", event_code);
                 buf.put("STAT".as_bytes());
                 buf.put(event_code.as_bytes());
                 buf.put_u8(stat_data.crlf);

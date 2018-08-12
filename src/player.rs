@@ -1,4 +1,6 @@
 use actix;
+use glib;
+use glib::translate::ToGlib;
 use gst;
 use gst::prelude::*;
 use gst::MessageView;
@@ -45,6 +47,8 @@ pub enum PlayerMessages {
         output_buffer_fullness: u32,
     },
     Bufsize(usize),
+    Underrun,
+    // Outputunderrun,
 }
 
 impl actix::Message for PlayerMessages {
@@ -111,9 +115,6 @@ impl actix::Handler<PlayerControl> for Player {
     type Result = ();
 
     fn handle(&mut self, msg: PlayerControl, _ctx: &mut actix::Context<Self>) {
-        // const IBUF_SIZE: u32 = 2 * 1024 * 1024; // bytes
-        // const OBUF_SIZE: u64 = 10_000_000_000; // nanoseconds
-
         match msg {
             PlayerControl::Gain(gain_left, gain_right) => {
                 self.gain = if gain_left > gain_right {
@@ -140,6 +141,8 @@ impl actix::Handler<PlayerControl> for Player {
                 http_headers,
             } => {
                 info!("Got stream request");
+
+                self.stream_stop();
 
                 let mut elements = HashMap::new();
                 elements.extend(vec![
@@ -249,14 +252,25 @@ impl actix::Handler<PlayerControl> for Player {
                     }
                 }
 
-                if let Some(ibuf) = elements.get("ibuf") {
+                let underrun_id = if let Some(ibuf) = elements.get("ibuf") {
                     ibuf.set_property("max-size-bytes", &threshold).unwrap();
-                }
+                    let proto = self.proto.clone();
+                    if let Ok(underrun_id) = ibuf.connect("underrun", true, move |_| {
+                        proto.do_send(PlayerMessages::Underrun);
+                        None
+                    }) {
+                        underrun_id.to_glib()
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
 
                 if let Some(obuf) = elements.get("obuf") {
                     obuf.set_property("max-size-time", &output_threshold)
                         .unwrap();
-                }
+                };
 
                 if let Some(volume) = elements.get("volume") {
                     let gain = if replay_gain < 0.0001 {
@@ -323,8 +337,13 @@ impl actix::Handler<PlayerControl> for Player {
                                 break;
                             }
                             MessageView::Eos(..) => {
+                                // if underrun_id > 0 {
+                                    if let Some(ibuf) = pipeline.get_by_name("ibuf") {
+                                        info!("Disconnecting: {}", underrun_id);
+                                        ibuf.disconnect(glib::translate::from_glib(underrun_id));
+                                    }
+                                // }
                                 proto.do_send(PlayerMessages::Eos);
-                                break;
                             }
                             MessageView::Element(element) => {
                                 if let Some(source) = element.get_src() {

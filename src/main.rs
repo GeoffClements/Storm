@@ -13,6 +13,7 @@ extern crate actix;
 extern crate rand;
 extern crate mac_address;
 extern crate gstreamer as gst;
+extern crate glib;
 
 mod proto;
 mod codec;

@@ -171,8 +171,7 @@ impl actix::Handler<player::PlayerMessages> for Proto {
             }
 
             player::PlayerMessages::Eos => {
-                self.framed.write(self.stat_data.make_stat_message("STMu"));
-                self.player.do_send(player::PlayerControl::Stop);
+                self.framed.write(self.stat_data.make_stat_message("STMd"));
             }
 
             player::PlayerMessages::Established => {
@@ -206,6 +205,10 @@ impl actix::Handler<player::PlayerMessages> for Proto {
             player::PlayerMessages::Bufsize(buf_size) => {
                 self.stat_data.bytes_received =
                     self.stat_data.bytes_received.wrapping_add(buf_size as u64);
+            }
+
+            player::PlayerMessages::Underrun => {
+                self.framed.write(self.stat_data.make_stat_message("STMu"));
             }
         }
     }
