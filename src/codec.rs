@@ -93,7 +93,7 @@ impl Default for StatData {
     fn default() -> Self {
         StatData {
             crlf: 0,
-            buffer_size: 256 * 256 * 2,
+            buffer_size: 256 * 256 * 16,
             fullness: 0,
             bytes_received: 0,
             sig_strength: 0,
