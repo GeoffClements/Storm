@@ -207,9 +207,9 @@ impl actix::Handler<player::PlayerMessages> for Proto {
                     self.stat_data.bytes_received.wrapping_add(buf_size as u64);
             }
 
-            player::PlayerMessages::Underrun => {
-                self.framed.write(self.stat_data.make_stat_message("STMu"));
-            }
+            // player::PlayerMessages::Underrun => {
+            //     self.framed.write(self.stat_data.make_stat_message("STMu"));
+            // }
         }
     }
 }
