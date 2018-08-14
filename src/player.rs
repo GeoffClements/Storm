@@ -370,48 +370,28 @@ impl actix::Handler<PlayerControl> for Player {
 
                             _ => (),
                         },
+
                         None => {
-                            let pos = {
-                                let mut q = gst::Query::new_position(gst::Format::Time);
-                                if pipeline.query(&mut q) {
-                                    Some(q.get_result())
-                                } else {
-                                    None
-                                }
-                            }.and_then(|pos| pos.try_into_time().ok());
-
-                            let pos = if let Some(pos) = pos {
-                                if let Some(millis) = pos.mseconds() {
-                                    millis
-                                } else {
-                                    0
-                                }
-                            } else {
-                                0
-                            };
-
                             let ibuf_fullness = if let Some(ibuf) = pipeline.get_by_name("ibuf") {
-                                if let Ok(bytes) = ibuf.get_property("current-level-bytes") {
-                                    bytes.get().unwrap_or(0)
-                                } else {
-                                    0
+                                match ibuf.get_property("current-level-bytes") {
+                                    Ok(bytes) => bytes.get().unwrap_or(0),
+                                    _ => 0,
                                 }
                             } else {
                                 0
                             };
 
                             let obuf_fullness = if let Some(obuf) = pipeline.get_by_name("obuf") {
-                                if let Ok(bytes) = obuf.get_property("current-level-bytes") {
-                                    bytes.get().unwrap_or(0)
-                                } else {
-                                    0
+                                match obuf.get_property("current-level-bytes") {
+                                    Ok(bytes) => bytes.get().unwrap_or(0),
+                                    _ => 0,
                                 }
                             } else {
                                 0
                             };
 
                             proto.do_send(PlayerMessages::Streamdata {
-                                position: pos,
+                                position: query_pos(pipeline),
                                 fullness: ibuf_fullness,
                                 output_buffer_fullness: obuf_fullness,
                             });
@@ -454,5 +434,17 @@ impl actix::Handler<PlayerControl> for Player {
                 }
             }
         }
+    }
+}
+
+fn query_pos(pipeline: gst::Pipeline) -> u64 {
+    let mut q = gst::Query::new_position(gst::Format::Time);
+    if pipeline.query(&mut q) {
+        match q.get_result().try_into_time() {
+            Ok(pos) => pos.mseconds().unwrap_or(0),
+            _ => 0,
+        }
+    } else {
+        0
     }
 }
