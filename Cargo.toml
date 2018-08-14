@@ -18,9 +18,9 @@ actix = "0.7"
 rand = "0.5"
 mac_address = "0.8"
 gstreamer = "0.11"
-glib = "0.5"
+# glib = "0.5"
 
 [dependencies.clap]
-version = "2.25.1"
+version = "2.32"
 default-features = false
 features = ["wrap_help"]

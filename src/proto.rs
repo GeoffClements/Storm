@@ -136,12 +136,27 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 self.player.do_send(player::PlayerControl::Stop);
             }
 
-            codec::ServerMessage::Pause(..) => {
-                self.player.do_send(player::PlayerControl::Pause);
+            codec::ServerMessage::Pause(millis) => {
+                if millis == 0 {
+                    self.player.do_send(player::PlayerControl::Pause(false));
+                } else {
+                    self.player.do_send(player::PlayerControl::Pause(true));
+                    let player_addr = self.player.clone();
+                    Arbiter::spawn(
+                        tokio_timer::Delay::new(
+                            Instant::now() + Duration::from_millis(millis as u64),
+                        ).and_then(move |_| {
+                            player_addr.do_send(player::PlayerControl::Unpause(true));
+                            future::ok(())
+                        })
+                            .map_err(|_| ()),
+                    )
+                }
             }
 
+            // TODO: unpause at time
             codec::ServerMessage::Unpause(..) => {
-                self.player.do_send(player::PlayerControl::Unpause);
+                self.player.do_send(player::PlayerControl::Unpause(false));
             }
 
             codec::ServerMessage::Unrecognised(msg) => {
@@ -205,11 +220,9 @@ impl actix::Handler<player::PlayerMessages> for Proto {
             player::PlayerMessages::Bufsize(buf_size) => {
                 self.stat_data.bytes_received =
                     self.stat_data.bytes_received.wrapping_add(buf_size as u64);
-            }
-
-            // player::PlayerMessages::Underrun => {
-            //     self.framed.write(self.stat_data.make_stat_message("STMu"));
-            // }
+            } // player::PlayerMessages::Underrun => {
+              //     self.framed.write(self.stat_data.make_stat_message("STMu"));
+              // }
         }
     }
 }

@@ -24,8 +24,8 @@ pub enum PlayerControl {
         http_headers: String,
     },
     Stop,
-    Pause,
-    Unpause,
+    Pause(bool),
+    Unpause(bool),
 }
 
 impl actix::Message for PlayerControl {
@@ -77,24 +77,6 @@ impl Player {
             if pipeline.set_state(gst::State::Null) != gst::StateChangeReturn::Failure {
                 info!("Stopping stream");
                 self.proto.do_send(PlayerMessages::Flushed);
-            }
-        }
-    }
-
-    fn stream_pause(&mut self) {
-        if let Some(ref pipeline) = self.pipeline {
-            if pipeline.set_state(gst::State::Paused) != gst::StateChangeReturn::Failure {
-                info!("Pausing stream");
-                self.proto.do_send(PlayerMessages::Paused);
-            }
-        }
-    }
-
-    fn stream_unpause(&mut self) {
-        if let Some(ref pipeline) = self.pipeline {
-            if pipeline.set_state(gst::State::Playing) != gst::StateChangeReturn::Failure {
-                info!("Resuming stream");
-                self.proto.do_send(PlayerMessages::Unpaused);
             }
         }
     }
@@ -278,11 +260,12 @@ impl actix::Handler<PlayerControl> for Player {
                 // };
 
                 if let Some(ibuf) = elements.get("ibuf") {
-                    ibuf.set_property("max-size-bytes", &(&threshold * 16)).unwrap();
+                    ibuf.set_property("max-size-bytes", &(&threshold * 32))
+                        .unwrap();
                 };
 
                 if let Some(obuf) = elements.get("obuf") {
-                    obuf.set_property("max-size-time", &(&output_threshold * 4))
+                    obuf.set_property("max-size-time", &(&output_threshold * 1))
                         .unwrap();
                 };
 
@@ -449,14 +432,26 @@ impl actix::Handler<PlayerControl> for Player {
                 self.stream_stop();
             }
 
-            // TODO: pause for fixed period
-            PlayerControl::Pause => {
-                self.stream_pause();
+            PlayerControl::Pause(quiet) => {
+                if let Some(ref pipeline) = self.pipeline {
+                    info!("Pausing stream");
+                    if pipeline.set_state(gst::State::Paused) != gst::StateChangeReturn::Failure {
+                        if !quiet {
+                            self.proto.do_send(PlayerMessages::Paused);
+                        }
+                    }
+                }
             }
 
-            // TODO: unpause at time
-            PlayerControl::Unpause => {
-                self.stream_unpause();
+            PlayerControl::Unpause(quiet) => {
+                if let Some(ref pipeline) = self.pipeline {
+                    info!("Resuming stream");
+                    if pipeline.set_state(gst::State::Playing) != gst::StateChangeReturn::Failure {
+                        if !quiet {
+                            self.proto.do_send(PlayerMessages::Unpaused);
+                        }
+                    }
+                }
             }
         }
     }
