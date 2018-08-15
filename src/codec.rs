@@ -61,6 +61,7 @@ pub enum ClientMessage {
         stat_data: StatData,
     },
     Bye(u8),
+    Name(String),
 }
 
 #[derive(Clone, Copy)]
@@ -129,6 +130,8 @@ pub enum ServerMessage {
     Stop,
     Pause(u32),
     Unpause(u32),
+    Queryname,
+    Setname(String),
     Unrecognised(String),
     Error,
 }
@@ -156,10 +159,12 @@ impl From<ClientMessage> for BytesMut {
                 buf.put_u64_be(bytes_received);
                 buf.put(capabilities.as_bytes());
             }
+
             ClientMessage::Bye(val) => {
                 buf.put("BYE!".as_bytes());
                 buf.put_u8(val);
             }
+
             ClientMessage::Stat {
                 event_code,
                 stat_data,
@@ -181,6 +186,13 @@ impl From<ClientMessage> for BytesMut {
                 buf.put_u32_be(stat_data.elapsed_milliseconds);
                 buf.put_u32_be(stat_data.timestamp);
                 buf.put_u16_be(stat_data.error_code);
+            }
+
+            ClientMessage::Name(name) => {
+                info!("Sending SETD witn name: {}", name);
+                buf.put("SETD".as_bytes());
+                buf.put_u8(0);
+                buf.put(name.as_bytes());
             }
         }
 
@@ -218,6 +230,7 @@ impl From<BytesMut> for ServerMessage {
                     }
                 }
             }
+
             "strm" => {
                 if src.len() < 24 {
                     return ServerMessage::Error;
@@ -268,10 +281,21 @@ impl From<BytesMut> for ServerMessage {
                 }
             }
             "aude" => ServerMessage::Enable(!(src[1].into_buf().get_u8() == 0)),
+
             "audg" => ServerMessage::Gain(
                 src[10..14].into_buf().get_u32_be() as f64 / GAIN_FACTOR,
                 src[14..18].into_buf().get_u32_be() as f64 / GAIN_FACTOR,
             ),
+
+            "setd" => {
+                if src.len() > 1 {
+                    let name: String = src[1..].into_iter().map(|c| *c as char).collect();
+                    ServerMessage::Setname(name)
+                } else {
+                    ServerMessage::Queryname
+                }
+            }
+
             cmd @ _ => ServerMessage::Unrecognised(cmd.to_owned()),
         }
     }

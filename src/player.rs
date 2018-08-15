@@ -132,7 +132,7 @@ impl actix::Handler<PlayerControl> for Player {
                 control_ip,
                 http_headers,
             } => {
-                info!("Got stream request");
+                info!("Got stream request, autostart: {}", autostart);
 
                 self.stream_stop();
 
@@ -333,13 +333,16 @@ impl actix::Handler<PlayerControl> for Player {
                                 proto.do_send(PlayerMessages::Error);
                                 break;
                             }
+
                             MessageView::Eos(..) => {
                                 // if let Some(ibuf) = pipeline.get_by_name("ibuf") {
                                 //     info!("Disconnecting: {}", underrun_id);
                                 //     ibuf.disconnect(glib::translate::from_glib(underrun_id));
                                 // }
+                                info!("End of stream stected");
                                 proto.do_send(PlayerMessages::Eos);
                             }
+
                             MessageView::Element(element) => {
                                 if let Some(source) = element.get_src() {
                                     if source.get_name() == "source" {
@@ -356,8 +359,9 @@ impl actix::Handler<PlayerControl> for Player {
 
                             MessageView::StateChanged(state) => {
                                 if let Some(source) = state.get_src() {
-                                    if source.get_name() == "source" {
+                                    if source.get_name() == "stormpipe" {
                                         if state.get_current() == gst::State::Null {
+                                            info!("Pipeline moved to null state");
                                             break;
                                         }
                                     }

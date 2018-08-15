@@ -23,6 +23,7 @@ pub struct Proto {
     creation_time: Instant,
     stat_data: codec::StatData,
     server_ip: Ipv4Addr,
+    name: String,
     player: actix::Addr<player::Player>,
     framed: actix::io::FramedWrite<WriteHalf<TcpStream>, codec::SlimCodec>,
 }
@@ -32,8 +33,8 @@ impl Actor for Proto {
 
     // TODO:
     //  Get capabilities from GStreamer (if it's possible)
-    //  Pass model name from command line
     fn started(&mut self, _ctx: &mut Context<Self>) {
+        let name = format!("ModelName={}", self.name);
         let caps = vec![
             "flc",
             "ogg",
@@ -41,7 +42,7 @@ impl Actor for Proto {
             "wma",
             "aac",
             "Model=Storm",
-            "ModelName=Storm",
+            name.as_str(),
             "AccuratePlayPoints=1",
             "HasDigitalOut=1",
             "HasPolarityInversion=1",
@@ -85,7 +86,7 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 sync_group_id,
             } => {
                 info!("Got serv message");
-                spawn_proto(ip_address, sync_group_id);
+                spawn_proto(ip_address, sync_group_id, self.name.as_str());
                 ctx.stop();
             }
 
@@ -182,6 +183,15 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 }
             }
 
+            codec::ServerMessage::Setname(name) => {
+                info!("Setting player name to: {}", name);
+                self.name = name;
+            }
+
+            codec::ServerMessage::Queryname => {
+                self.framed.write(codec::ClientMessage::Name(self.name.clone()));
+            }
+
             codec::ServerMessage::Unrecognised(msg) => {
                 warn!("Unrecognised message: {}", msg);
             }
@@ -257,14 +267,15 @@ impl Proto {
     }
 }
 
-pub fn run(server_ip: Ipv4Addr, sync_group: Option<String>) {
+pub fn run(server_ip: Ipv4Addr, sync_group: Option<String>, name: &str) {
     let sys = System::new("Storm");
-    spawn_proto(server_ip, sync_group);
+    spawn_proto(server_ip, sync_group, name);
     spawn_signal_handler();
     sys.run();
 }
 
-fn spawn_proto(server_ip: Ipv4Addr, sync_group: Option<String>) {
+fn spawn_proto(server_ip: Ipv4Addr, sync_group: Option<String>, name: &str) {
+    let name = name.to_owned();
     let addr = SocketAddr::new(IpAddr::V4(server_ip), 3483);
     Arbiter::spawn(
         TcpStream::connect(&addr)
@@ -278,6 +289,7 @@ fn spawn_proto(server_ip: Ipv4Addr, sync_group: Option<String>) {
                         creation_time: Instant::now(),
                         stat_data: codec::StatData::default(),
                         server_ip: server_ip,
+                        name: name,
                         player: player.start(),
                         framed: actix::io::FramedWrite::new(w, codec::SlimCodec, ctx),
                     }

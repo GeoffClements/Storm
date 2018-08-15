@@ -1,23 +1,24 @@
 extern crate clap;
-#[macro_use] extern crate log;
-extern crate fern;
-extern crate tokio_core;
-extern crate tokio_timer;
-extern crate tokio_codec;
-extern crate tokio_io;
-extern crate tokio_tcp;
-extern crate tokio_signal;
-extern crate futures;
-extern crate bytes;
+#[macro_use]
+extern crate log;
 extern crate actix;
-extern crate rand;
-extern crate mac_address;
+extern crate bytes;
+extern crate fern;
+extern crate futures;
 extern crate gstreamer as gst;
+extern crate mac_address;
+extern crate rand;
+extern crate tokio_codec;
+extern crate tokio_core;
+extern crate tokio_io;
+extern crate tokio_signal;
+extern crate tokio_tcp;
+extern crate tokio_timer;
 // extern crate glib;
 
-mod proto;
 mod codec;
 mod player;
+mod proto;
 
 use log::LevelFilter;
 
@@ -49,7 +50,14 @@ fn main() {
                 .long("log-level")
                 .help("Set logging level")
                 .takes_value(true)
-                .possible_values(&["error", "warn", "info", "debug", "trace"]),
+                .possible_values(&["info", "warn", "error", "debug", "trace"]),
+        )
+        .arg(
+            clap::Arg::with_name("name")
+                .short("n")
+                .long("name")
+                .help("Set the name of the player")
+                .default_value("Storm"),
         )
         .get_matches();
 
@@ -87,5 +95,5 @@ fn main() {
 
     info!("Using server address {}", server_addr);
 
-    proto::run(server_addr, None);
+    proto::run(server_addr, None, opts.value_of("name").unwrap());
 }
