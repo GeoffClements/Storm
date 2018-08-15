@@ -372,28 +372,10 @@ impl actix::Handler<PlayerControl> for Player {
                         },
 
                         None => {
-                            let ibuf_fullness = if let Some(ibuf) = pipeline.get_by_name("ibuf") {
-                                match ibuf.get_property("current-level-bytes") {
-                                    Ok(bytes) => bytes.get().unwrap_or(0),
-                                    _ => 0,
-                                }
-                            } else {
-                                0
-                            };
-
-                            let obuf_fullness = if let Some(obuf) = pipeline.get_by_name("obuf") {
-                                match obuf.get_property("current-level-bytes") {
-                                    Ok(bytes) => bytes.get().unwrap_or(0),
-                                    _ => 0,
-                                }
-                            } else {
-                                0
-                            };
-
                             proto.do_send(PlayerMessages::Streamdata {
-                                position: query_pos(pipeline),
-                                fullness: ibuf_fullness,
-                                output_buffer_fullness: obuf_fullness,
+                                position: query_pos(&pipeline),
+                                fullness: buffer_fullness(&pipeline, "ibuf"),
+                                output_buffer_fullness: buffer_fullness(&pipeline, "obuf"),
                             });
                         }
                     }
@@ -437,7 +419,7 @@ impl actix::Handler<PlayerControl> for Player {
     }
 }
 
-fn query_pos(pipeline: gst::Pipeline) -> u64 {
+fn query_pos(pipeline: &gst::Pipeline) -> u64 {
     let mut q = gst::Query::new_position(gst::Format::Time);
     if pipeline.query(&mut q) {
         match q.get_result().try_into_time() {
@@ -446,5 +428,15 @@ fn query_pos(pipeline: gst::Pipeline) -> u64 {
         }
     } else {
         0
+    }
+}
+
+fn buffer_fullness(pipeline: &gst::Pipeline, buffer: &str) -> u32 {
+    match pipeline.get_by_name(buffer) {
+        Some(buf) => match buf.get_property("current-level-bytes") {
+            Ok(bytes) => bytes.get().unwrap_or(0),
+            _ => 0,
+        },
+        _ => 0,
     }
 }

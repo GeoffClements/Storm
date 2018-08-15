@@ -105,6 +105,7 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 server_ip,
                 http_headers,
             } => {
+                info!("Got stream start");
                 self.stat_data.elapsed_milliseconds = 0;
                 self.stat_data.elapsed_seconds = 0;
                 self.stat_data.fullness = 0;
@@ -124,19 +125,23 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
             }
 
             codec::ServerMessage::Gain(gain_left, gain_right) => {
+                info!("Got gain; Left: {}, Right: {}", gain_left, gain_right);
                 self.player
                     .do_send(player::PlayerControl::Gain(gain_left, gain_right));
             }
 
             codec::ServerMessage::Enable(enable) => {
+                info!("Got enable: {}", enable);
                 self.player.do_send(player::PlayerControl::Enable(enable));
             }
 
             codec::ServerMessage::Stop => {
+                info!("Got stream stop");
                 self.player.do_send(player::PlayerControl::Stop);
             }
 
             codec::ServerMessage::Pause(millis) => {
+                info!("Pause received with delay: {}", millis);
                 if millis == 0 {
                     self.player.do_send(player::PlayerControl::Pause(false));
                 } else {
@@ -154,9 +159,27 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 }
             }
 
-            // TODO: unpause at time
-            codec::ServerMessage::Unpause(..) => {
-                self.player.do_send(player::PlayerControl::Unpause(false));
+            codec::ServerMessage::Unpause(millis) => {
+                info!("Unpause received with delay: {}", millis);
+                if millis == 0 {
+                    self.player.do_send(player::PlayerControl::Unpause(false));
+                } else {
+                    let player_addr = self.player.clone();
+                    let delay = millis - self.jiffies();
+                    if delay > 0 {
+                        Arbiter::spawn(
+                            tokio_timer::Delay::new(
+                                Instant::now() + Duration::from_millis(delay as u64),
+                            ).and_then(move |_| {
+                                player_addr.do_send(player::PlayerControl::Unpause(true));
+                                future::ok(())
+                            })
+                                .map_err(|_| ()),
+                        )
+                    } else {
+                        player_addr.do_send(player::PlayerControl::Unpause(true));
+                    }
+                }
             }
 
             codec::ServerMessage::Unrecognised(msg) => {
