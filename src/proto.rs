@@ -192,6 +192,10 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 self.framed.write(codec::ClientMessage::Name(self.name.clone()));
             }
 
+            codec::ServerMessage::Unknownsetd(id) => {
+                warn!("Unused SETD id: {}", id);
+            }
+
             codec::ServerMessage::Unrecognised(msg) => {
                 warn!("Unrecognised message: {}", msg);
             }

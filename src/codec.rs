@@ -132,6 +132,7 @@ pub enum ServerMessage {
     Unpause(u32),
     Queryname,
     Setname(String),
+    Unknownsetd(u8),
     Unrecognised(String),
     Error,
 }
@@ -292,7 +293,11 @@ impl From<BytesMut> for ServerMessage {
                     let name: String = src[1..].into_iter().map(|c| *c as char).collect();
                     ServerMessage::Setname(name)
                 } else {
-                    ServerMessage::Queryname
+                    if src[0] == 0 {
+                        ServerMessage::Queryname
+                    } else {
+                        ServerMessage::Unknownsetd(src[0])
+                    }
                 }
             }
 

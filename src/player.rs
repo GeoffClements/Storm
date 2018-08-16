@@ -339,7 +339,7 @@ impl actix::Handler<PlayerControl> for Player {
                                 //     info!("Disconnecting: {}", underrun_id);
                                 //     ibuf.disconnect(glib::translate::from_glib(underrun_id));
                                 // }
-                                info!("End of stream stected");
+                                info!("End of stream detected");
                                 proto.do_send(PlayerMessages::Eos);
                             }
 
@@ -390,6 +390,14 @@ impl actix::Handler<PlayerControl> for Player {
                         error!("Unable to set the pipeline to the Playing state");
                     }
                 }
+                // else {
+                    // unlink decoder from ibuf;
+                    // set pipeline to playing;
+                    // wait for ibuf full signal;
+                    // send stat STMl;
+                    // wait for cont message from server;
+                    // re-link decoder to ibuf;
+                    // }
 
                 self.pipeline = Some(pipeline);
             }
