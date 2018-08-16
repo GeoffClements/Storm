@@ -24,6 +24,7 @@ pub struct Proto {
     stat_data: codec::StatData,
     server_ip: Ipv4Addr,
     name: String,
+    autostart: bool,
     player: actix::Addr<player::Player>,
     framed: actix::io::FramedWrite<WriteHalf<TcpStream>, codec::SlimCodec>,
 }
@@ -201,6 +202,11 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 warn!("Unrecognised message: {}", msg);
             }
 
+            codec::ServerMessage::Cont => {
+                info!("Received continue");
+                self.player.do_send(player::PlayerControl::Continue);
+            }
+
             _ => (),
         }
     }
@@ -260,6 +266,18 @@ impl actix::Handler<player::PlayerMessages> for Proto {
                     self.stat_data.bytes_received.wrapping_add(buf_size as u64);
             }
 
+            player::PlayerMessages::Overrun => {
+                if !self.autostart {
+                    self.player.do_send(player::PlayerControl::Pause(true));
+                    self.framed.write(self.stat_data.make_stat_message("STMl"));
+                    self.autostart = true;
+                }
+            }
+
+            player::PlayerMessages::Autostart(autostart) => {
+                self.autostart = autostart;
+            }
+            
             // player::PlayerMessages::Underrun => {
             //     self.framed.write(self.stat_data.make_stat_message("STMu"));
             // }
@@ -301,6 +319,7 @@ fn spawn_proto(server_ip: Ipv4Addr, sync_group: Option<String>, name: &str) {
                         stat_data: codec::StatData::default(),
                         server_ip: server_ip,
                         name: name,
+                        autostart: true,
                         player: player.start(),
                         framed: actix::io::FramedWrite::new(w, codec::SlimCodec, ctx),
                     }

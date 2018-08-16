@@ -133,6 +133,7 @@ pub enum ServerMessage {
     Queryname,
     Setname(String),
     Unknownsetd(u8),
+    Cont,
     Unrecognised(String),
     Error,
 }
@@ -299,6 +300,10 @@ impl From<BytesMut> for ServerMessage {
                         ServerMessage::Unknownsetd(src[0])
                     }
                 }
+            }
+
+            "cont" => {
+                ServerMessage::Cont
             }
 
             cmd @ _ => ServerMessage::Unrecognised(cmd.to_owned()),

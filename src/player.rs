@@ -26,6 +26,7 @@ pub enum PlayerControl {
     Stop,
     Pause(bool),
     Unpause(bool),
+    Continue,
 }
 
 impl actix::Message for PlayerControl {
@@ -47,6 +48,8 @@ pub enum PlayerMessages {
         output_buffer_fullness: u32,
     },
     Bufsize(usize),
+    Overrun,
+    Autostart(bool),
     // Underrun,
     // Outputunderrun,
 }
@@ -135,6 +138,8 @@ impl actix::Handler<PlayerControl> for Player {
                 info!("Got stream request, autostart: {}", autostart);
 
                 self.stream_stop();
+
+                self.proto.do_send(PlayerMessages::Autostart(autostart));
 
                 let mut elements = HashMap::new();
                 elements.extend(vec![
@@ -247,7 +252,11 @@ impl actix::Handler<PlayerControl> for Player {
                 if let Some(ibuf) = elements.get("ibuf") {
                     ibuf.set_property("max-size-bytes", &(&threshold * 32))
                         .unwrap();
-                    // let proto = self.proto.clone();
+                    let proto = self.proto.clone();
+                    ibuf.connect("overrun", true, move |_| {
+                        proto.do_send(PlayerMessages::Overrun);
+                        None
+                    }).unwrap();
                     // ibuf.connect("underrun", true, move |_| {
                     //     proto.do_send(PlayerMessages::Underrun);
                     //     None
@@ -382,19 +391,9 @@ impl actix::Handler<PlayerControl> for Player {
                     }
                 });
 
-                if autostart {
-                    if pipeline.set_state(gst::State::Playing) == gst::StateChangeReturn::Failure {
-                        error!("Unable to set the pipeline to the Playing state");
-                    }
+                if pipeline.set_state(gst::State::Playing) == gst::StateChangeReturn::Failure {
+                    error!("Unable to set the pipeline to the Playing state");
                 }
-                // else {
-                // unlink decoder from ibuf;
-                // set pipeline to playing;
-                // wait for ibuf full signal;
-                // send stat STMl;
-                // wait for cont message from server;
-                // re-link decoder to ibuf;
-                // }
 
                 self.pipeline = Some(pipeline);
             }
@@ -423,6 +422,15 @@ impl actix::Handler<PlayerControl> for Player {
                         }
                     }
                 }
+            }
+
+            PlayerControl::Continue => {
+                // if let Some(ref pipeline) = self.pipeline {
+                //     if !self.autostart {
+                //         let _ = pipeline.set_state(gst::State::Paused);
+                //         self.autostart = true;
+                //     }
+                // }
             }
         }
     }
