@@ -244,29 +244,24 @@ impl actix::Handler<PlayerControl> for Player {
                     }
                 }
 
-                // let underrun_id = if let Some(ibuf) = elements.get("ibuf") {
-                //     ibuf.set_property("max-size-bytes", &threshold).unwrap();
-                //     let proto = self.proto.clone();
-                //     if let Ok(underrun_id) = ibuf.connect("underrun", true, move |_| {
-                //         proto.do_send(PlayerMessages::Underrun);
-                //         None
-                //     }) {
-                //         underrun_id.to_glib()
-                //     } else {
-                //         0
-                //     }
-                // } else {
-                //     0
-                // };
-
                 if let Some(ibuf) = elements.get("ibuf") {
                     ibuf.set_property("max-size-bytes", &(&threshold * 32))
                         .unwrap();
+                    // let proto = self.proto.clone();
+                    // ibuf.connect("underrun", true, move |_| {
+                    //     proto.do_send(PlayerMessages::Underrun);
+                    //     None
+                    // }).unwrap();
                 };
 
                 if let Some(obuf) = elements.get("obuf") {
                     obuf.set_property("max-size-time", &(&output_threshold * 1))
                         .unwrap();
+                    // let proto = self.proto.clone();
+                    // obuf.connect("underrun", true, move |_| {
+                    //     proto.do_send(PlayerMessages::Outputunderrun);
+                    //     None
+                    // }).unwrap();
                 };
 
                 if let Some(volume) = elements.get("volume") {
@@ -311,76 +306,78 @@ impl actix::Handler<PlayerControl> for Player {
                 let proto = self.proto.clone();
                 let bus = pipeline.get_bus().unwrap();
                 let pipeline_weak = pipeline.downgrade();
-                ::std::thread::spawn(move || loop {
+                ::std::thread::spawn(move || {
                     let pipeline = match pipeline_weak.upgrade() {
                         Some(pipeline) => pipeline,
                         None => return,
                     };
 
-                    let msg = bus.timed_pop(gst::ClockTime::from_mseconds(100));
-                    // println!("{:?}", msg);
-                    match msg {
-                        Some(msg) => match msg.view() {
-                            MessageView::Error(error) => {
-                                error!(
-                                    "Stream error: {}",
-                                    if let Some(e) = error.get_debug() {
-                                        e
-                                    } else {
-                                        "undefined".to_owned()
-                                    }
-                                );
-                                proto.do_send(PlayerMessages::Error);
-                                break;
-                            }
+                    loop {
+                        let msg = bus.timed_pop(gst::ClockTime::from_mseconds(100));
+                        // println!("{:?}", msg);
+                        match msg {
+                            Some(msg) => match msg.view() {
+                                MessageView::Error(error) => {
+                                    error!(
+                                        "Stream error: {}",
+                                        if let Some(e) = error.get_debug() {
+                                            e
+                                        } else {
+                                            "undefined".to_owned()
+                                        }
+                                    );
+                                    proto.do_send(PlayerMessages::Error);
+                                    break;
+                                }
 
-                            MessageView::Eos(..) => {
-                                // if let Some(ibuf) = pipeline.get_by_name("ibuf") {
-                                //     info!("Disconnecting: {}", underrun_id);
-                                //     ibuf.disconnect(glib::translate::from_glib(underrun_id));
-                                // }
-                                info!("End of stream detected");
-                                proto.do_send(PlayerMessages::Eos);
-                            }
+                                MessageView::Eos(..) => {
+                                    // if let Some(ibuf) = pipeline.get_by_name("ibuf") {
+                                    //     info!("Disconnecting: {}", underrun_id);
+                                    //     ibuf.disconnect(glib::translate::from_glib(underrun_id));
+                                    // }
+                                    info!("End of stream detected");
+                                    proto.do_send(PlayerMessages::Eos);
+                                }
 
-                            MessageView::Element(element) => {
-                                if let Some(source) = element.get_src() {
-                                    if source.get_name() == "source" {
-                                        if let Some(structure) = element.get_structure() {
-                                            if structure.get_name() == "http-headers" {
-                                                proto.do_send(PlayerMessages::Established);
-                                                let crlf = structure.iter().count() as u8;
-                                                proto.do_send(PlayerMessages::Headers(crlf));
+                                MessageView::Element(element) => {
+                                    if let Some(source) = element.get_src() {
+                                        if source.get_name() == "source" {
+                                            if let Some(structure) = element.get_structure() {
+                                                if structure.get_name() == "http-headers" {
+                                                    proto.do_send(PlayerMessages::Established);
+                                                    let crlf = structure.iter().count() as u8;
+                                                    proto.do_send(PlayerMessages::Headers(crlf));
+                                                }
                                             }
                                         }
                                     }
                                 }
-                            }
 
-                            MessageView::StateChanged(state) => {
-                                if let Some(source) = state.get_src() {
-                                    if source.get_name() == "stormpipe" {
-                                        if state.get_current() == gst::State::Null {
-                                            info!("Pipeline moved to null state");
-                                            break;
+                                MessageView::StateChanged(state) => {
+                                    if let Some(source) = state.get_src() {
+                                        if source.get_name() == "stormpipe" {
+                                            if state.get_current() == gst::State::Null {
+                                                info!("Pipeline moved to null state");
+                                                break;
+                                            }
                                         }
                                     }
                                 }
+
+                                MessageView::StreamStart(..) => {
+                                    proto.do_send(PlayerMessages::Start);
+                                }
+
+                                _ => (),
+                            },
+
+                            None => {
+                                proto.do_send(PlayerMessages::Streamdata {
+                                    position: query_pos(&pipeline),
+                                    fullness: buffer_fullness(&pipeline, "ibuf"),
+                                    output_buffer_fullness: buffer_fullness(&pipeline, "obuf"),
+                                });
                             }
-
-                            MessageView::StreamStart(..) => {
-                                proto.do_send(PlayerMessages::Start);
-                            }
-
-                            _ => (),
-                        },
-
-                        None => {
-                            proto.do_send(PlayerMessages::Streamdata {
-                                position: query_pos(&pipeline),
-                                fullness: buffer_fullness(&pipeline, "ibuf"),
-                                output_buffer_fullness: buffer_fullness(&pipeline, "obuf"),
-                            });
                         }
                     }
                 });
@@ -391,13 +388,13 @@ impl actix::Handler<PlayerControl> for Player {
                     }
                 }
                 // else {
-                    // unlink decoder from ibuf;
-                    // set pipeline to playing;
-                    // wait for ibuf full signal;
-                    // send stat STMl;
-                    // wait for cont message from server;
-                    // re-link decoder to ibuf;
-                    // }
+                // unlink decoder from ibuf;
+                // set pipeline to playing;
+                // wait for ibuf full signal;
+                // send stat STMl;
+                // wait for cont message from server;
+                // re-link decoder to ibuf;
+                // }
 
                 self.pipeline = Some(pipeline);
             }

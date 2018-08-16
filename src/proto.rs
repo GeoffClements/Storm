@@ -189,7 +189,8 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
             }
 
             codec::ServerMessage::Queryname => {
-                self.framed.write(codec::ClientMessage::Name(self.name.clone()));
+                self.framed
+                    .write(codec::ClientMessage::Name(self.name.clone()));
             }
 
             codec::ServerMessage::Unknownsetd(id) => {
@@ -257,9 +258,15 @@ impl actix::Handler<player::PlayerMessages> for Proto {
             player::PlayerMessages::Bufsize(buf_size) => {
                 self.stat_data.bytes_received =
                     self.stat_data.bytes_received.wrapping_add(buf_size as u64);
-            } // player::PlayerMessages::Underrun => {
-              //     self.framed.write(self.stat_data.make_stat_message("STMu"));
-              // }
+            }
+
+            // player::PlayerMessages::Underrun => {
+            //     self.framed.write(self.stat_data.make_stat_message("STMu"));
+            // }
+
+            // player::PlayerMessages::Outputunderrun => {
+            //     self.framed.write(self.stat_data.make_stat_message("STMo"));
+            // }
         }
     }
 }
