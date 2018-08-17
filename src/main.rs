@@ -14,7 +14,7 @@ extern crate tokio_io;
 extern crate tokio_signal;
 extern crate tokio_tcp;
 extern crate tokio_timer;
-// extern crate glib;
+extern crate thread_control;
 
 mod codec;
 mod player;

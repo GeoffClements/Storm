@@ -1,9 +1,8 @@
 use actix;
-// use glib;
-// use glib::translate::ToGlib;
 use gst;
 use gst::prelude::*;
 use gst::MessageView;
+use thread_control;
 
 use proto;
 
@@ -60,6 +59,7 @@ impl actix::Message for PlayerMessages {
 pub struct Player {
     gain: f64,
     enable: bool,
+    thread: Option<thread_control::Control>,
     pub proto: actix::Addr<proto::Proto>,
     pipeline: Option<gst::Pipeline>,
 }
@@ -69,6 +69,7 @@ impl Player {
         Player {
             gain: 1.0,
             enable: false,
+            thread: None,
             proto: proto,
             pipeline: None,
         }
@@ -79,6 +80,9 @@ impl Player {
             if pipeline.set_state(gst::State::Null) != gst::StateChangeReturn::Failure {
                 info!("Stopping stream");
                 self.proto.do_send(PlayerMessages::Flushed);
+                if let Some(ref control) = self.thread {
+                    control.stop();
+                }
             }
         }
     }
@@ -310,6 +314,8 @@ impl actix::Handler<PlayerControl> for Player {
                 });
 
                 let proto = self.proto.clone();
+                let (flag, control) = thread_control::make_pair();
+                self.thread = Some(control);
                 let bus = pipeline.get_bus().unwrap();
                 let pipeline_weak = pipeline.downgrade();
                 ::std::thread::spawn(move || {
@@ -320,6 +326,10 @@ impl actix::Handler<PlayerControl> for Player {
 
                     loop {
                         let msg = bus.timed_pop(gst::ClockTime::from_mseconds(100));
+                        if !flag.is_alive() {
+                            break;
+                        }
+
                         // println!("{:?}", msg);
                         match msg {
                             Some(msg) => match msg.view() {
@@ -337,10 +347,6 @@ impl actix::Handler<PlayerControl> for Player {
                                 }
 
                                 MessageView::Eos(..) => {
-                                    // if let Some(ibuf) = pipeline.get_by_name("ibuf") {
-                                    //     info!("Disconnecting: {}", underrun_id);
-                                    //     ibuf.disconnect(glib::translate::from_glib(underrun_id));
-                                    // }
                                     info!("End of stream detected");
                                     proto.do_send(PlayerMessages::Eos);
                                 }
