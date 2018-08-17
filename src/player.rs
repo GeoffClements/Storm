@@ -26,7 +26,7 @@ pub enum PlayerControl {
     Stop,
     Pause(bool),
     Unpause(bool),
-    Continue,
+    Skip(u32),
 }
 
 impl actix::Message for PlayerControl {
@@ -49,7 +49,6 @@ pub enum PlayerMessages {
     },
     Bufsize(usize),
     Overrun,
-    Autostart(bool),
     // Underrun,
     // Outputunderrun,
 }
@@ -138,8 +137,6 @@ impl actix::Handler<PlayerControl> for Player {
                 info!("Got stream request, autostart: {}", autostart);
 
                 self.stream_stop();
-
-                self.proto.do_send(PlayerMessages::Autostart(autostart));
 
                 let mut elements = HashMap::new();
                 elements.extend(vec![
@@ -424,13 +421,28 @@ impl actix::Handler<PlayerControl> for Player {
                 }
             }
 
-            PlayerControl::Continue => {
-                // if let Some(ref pipeline) = self.pipeline {
-                //     if !self.autostart {
-                //         let _ = pipeline.set_state(gst::State::Paused);
-                //         self.autostart = true;
-                //     }
-                // }
+            PlayerControl::Skip(interval) => {
+                if let Some(ref pipeline) = self.pipeline {
+                    let newpos = query_pos(pipeline) + interval as u64;
+                    info!("Skipping to postition: {}", newpos);
+                    let flags = {
+                        let (_, state, _) = pipeline.get_state(gst::ClockTime::none());
+                        if state == gst::State::Playing {
+                            gst::SeekFlags::SKIP
+                        } else {
+                            gst::SeekFlags::SKIP | gst::SeekFlags::FLUSH
+                        }
+                    };
+                    let seek = gst::Event::new_seek(
+                        1.0,
+                        flags,
+                        gst::SeekType::Set,
+                        gst::ClockTime::from_mseconds(newpos),
+                        gst::SeekType::None,
+                        gst::ClockTime::none(),
+                    ).build();
+                    pipeline.send_event(seek);
+                }
             }
         }
     }

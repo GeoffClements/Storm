@@ -113,6 +113,7 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 self.stat_data.fullness = 0;
                 self.stat_data.output_buffer_fullness = 0;
                 self.stat_data.crlf = 0;
+                self.autostart = autostart;
                 self.framed.write(self.stat_data.make_stat_message("STMc"));
                 self.player.do_send(player::PlayerControl::Stream {
                     autostart,
@@ -184,6 +185,11 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 }
             }
 
+            codec::ServerMessage::Skip(interval) => {
+                info!("Skip ahead by: {}", interval);
+                self.player.do_send(player::PlayerControl::Skip(interval));
+            }
+
             codec::ServerMessage::Setname(name) => {
                 info!("Setting player name to: {}", name);
                 self.name = name;
@@ -200,11 +206,6 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
 
             codec::ServerMessage::Unrecognised(msg) => {
                 warn!("Unrecognised message: {}", msg);
-            }
-
-            codec::ServerMessage::Cont => {
-                info!("Received continue");
-                self.player.do_send(player::PlayerControl::Continue);
             }
 
             _ => (),
@@ -274,10 +275,6 @@ impl actix::Handler<player::PlayerMessages> for Proto {
                 }
             }
 
-            player::PlayerMessages::Autostart(autostart) => {
-                self.autostart = autostart;
-            }
-            
             // player::PlayerMessages::Underrun => {
             //     self.framed.write(self.stat_data.make_stat_message("STMu"));
             // }

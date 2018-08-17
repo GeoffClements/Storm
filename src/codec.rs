@@ -133,7 +133,7 @@ pub enum ServerMessage {
     Queryname,
     Setname(String),
     Unknownsetd(u8),
-    Cont,
+    Skip(u32),
     Unrecognised(String),
     Error,
 }
@@ -274,6 +274,11 @@ impl From<BytesMut> for ServerMessage {
                         ServerMessage::Unpause(timestamp)
                     }
 
+                    'a' => {
+                        let timestamp = src[14..18].into_buf().get_u32_be();
+                        ServerMessage::Skip(timestamp)
+                    }
+
                     cmd @ _ => {
                         let mut msg = msg.to_owned();
                         msg.push('_');
@@ -300,10 +305,6 @@ impl From<BytesMut> for ServerMessage {
                         ServerMessage::Unknownsetd(src[0])
                     }
                 }
-            }
-
-            "cont" => {
-                ServerMessage::Cont
             }
 
             cmd @ _ => ServerMessage::Unrecognised(cmd.to_owned()),
