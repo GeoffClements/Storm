@@ -8,13 +8,13 @@ extern crate futures;
 extern crate gstreamer as gst;
 extern crate mac_address;
 extern crate rand;
+extern crate thread_control;
 extern crate tokio_codec;
 extern crate tokio_core;
 extern crate tokio_io;
 extern crate tokio_signal;
 extern crate tokio_tcp;
 extern crate tokio_timer;
-extern crate thread_control;
 
 mod codec;
 mod player;
@@ -59,6 +59,20 @@ fn main() {
                 .help("Set the name of the player")
                 .default_value("Storm"),
         )
+        .arg(
+            clap::Arg::with_name("buffersize")
+                .short("b")
+                .long("buffersize")
+                .help("Input buffer size in KiB")
+                .takes_value(true)
+                .default_value("2048")
+                .validator(|bufsize| {
+                    bufsize
+                        .parse::<u32>()
+                        .map(|_| ())
+                        .map_err(|_| format!("Unable to to parse {}", bufsize))
+                }),
+        )
         .get_matches();
 
     let log_level = match opts.value_of("log-level") {
@@ -93,7 +107,17 @@ fn main() {
         }),
     };
 
-    info!("Using server address {}", server_addr);
+    info!("Using server address: {}", server_addr);
+    info!("Name of player is: {}", opts.value_of("name").unwrap());
+    info!(
+        "Input buffer size is: {} KiB",
+        opts.value_of("buffersize").unwrap().parse::<u32>().unwrap()
+    );
 
-    proto::run(server_addr, None, opts.value_of("name").unwrap());
+    proto::run(
+        server_addr,
+        None,
+        opts.value_of("name").unwrap(),
+        opts.value_of("buffersize").unwrap().parse::<u32>().unwrap() * 1024,
+    );
 }

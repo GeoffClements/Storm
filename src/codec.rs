@@ -67,7 +67,7 @@ pub enum ClientMessage {
 #[derive(Clone, Copy)]
 pub struct StatData {
     pub crlf: u8,
-    buffer_size: u32,
+    pub buffer_size: u32,
     pub fullness: u32,
     pub bytes_received: u64,
     sig_strength: u16,

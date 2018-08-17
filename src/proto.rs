@@ -87,7 +87,7 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 sync_group_id,
             } => {
                 info!("Got serv message");
-                spawn_proto(ip_address, sync_group_id, self.name.as_str());
+                spawn_proto(ip_address, sync_group_id, self.name.as_str(), self.stat_data.buffer_size);
                 ctx.stop();
             }
 
@@ -273,8 +273,8 @@ impl actix::Handler<player::PlayerMessages> for Proto {
                     self.framed.write(self.stat_data.make_stat_message("STMl"));
                     self.autostart = true;
                 }
-            }
-
+            } 
+            
             // player::PlayerMessages::Underrun => {
             //     self.framed.write(self.stat_data.make_stat_message("STMu"));
             // }
@@ -293,14 +293,14 @@ impl Proto {
     }
 }
 
-pub fn run(server_ip: Ipv4Addr, sync_group: Option<String>, name: &str) {
+pub fn run(server_ip: Ipv4Addr, sync_group: Option<String>, name: &str, bufsize: u32) {
     let sys = System::new("Storm");
-    spawn_proto(server_ip, sync_group, name);
+    spawn_proto(server_ip, sync_group, name, bufsize);
     spawn_signal_handler();
     sys.run();
 }
 
-fn spawn_proto(server_ip: Ipv4Addr, sync_group: Option<String>, name: &str) {
+fn spawn_proto(server_ip: Ipv4Addr, sync_group: Option<String>, name: &str, bufsize: u32) {
     let name = name.to_owned();
     let addr = SocketAddr::new(IpAddr::V4(server_ip), 3483);
     Arbiter::spawn(
@@ -310,7 +310,7 @@ fn spawn_proto(server_ip: Ipv4Addr, sync_group: Option<String>, name: &str) {
                     let player = player::Player::new(ctx.address());
                     let (r, w) = stream.split();
                     ctx.add_stream(FramedRead::new(r, codec::SlimCodec));
-                    Proto {
+                    let mut proto = Proto {
                         sync_group_id: sync_group,
                         creation_time: Instant::now(),
                         stat_data: codec::StatData::default(),
@@ -319,7 +319,9 @@ fn spawn_proto(server_ip: Ipv4Addr, sync_group: Option<String>, name: &str) {
                         autostart: true,
                         player: player.start(),
                         framed: actix::io::FramedWrite::new(w, codec::SlimCodec, ctx),
-                    }
+                    };
+                    proto.stat_data.buffer_size = bufsize;
+                    proto
                 });
                 future::ok(())
             })
