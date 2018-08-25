@@ -18,7 +18,7 @@ RUN echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports bionic main" >> 
     && echo 'APT::Install-Recommends "0";' >> /etc/apt/apt.conf.d/10local \
     && echo 'APT::Install-Suggests "0";' >> /etc/apt/apt.conf.d/10local \
     && echo "foreign-architecture armhf" >> /etc/dpkg/dpkg.cfg.d/multiarch \
-    && apt-get update
+    && apt update
 
 RUN apt-get install -y --no-install-recommends \
     ca-certificates \
