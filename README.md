@@ -7,7 +7,7 @@ Storm is similar to [squeezelite](https://github.com/ralph-irving/squeezelite) b
 
 In addition storm reuses media code in the form of [gstreamer](https://gstreamer.freedesktop.org/) rather than trying to do it all itself. Storm fills the same function as squeezelite but does so in a very different way. Although making a small executable was not a primary aim, an optimised and stripped binary will be less than 3MiB which makes it quite small and so would be suitable to run on small devices.
 
-To see the run-time option type:
+To see the run-time options type:
 ```bash
 $ storm -h
 ```
@@ -22,6 +22,6 @@ Storm is written in Rust and links to the gstreamer library. In order to build y
 - libgstrtspserver-1.0-dev
 
 Build is simply a case of:
-``` bash
+```bash
 $ cargo build --release
 ```

@@ -2,6 +2,8 @@
 name = "storm"
 version = "0.1.0"
 authors = ["Geoff Clements <ro2kz0@gmail.com>"]
+readme = "README.md"
+license = "MIT"
 
 [dependencies]
 log = "0.4"
