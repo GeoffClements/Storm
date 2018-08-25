@@ -64,7 +64,6 @@ fn main() {
                 .short("b")
                 .long("buffersize")
                 .help("Input buffer size in KiB")
-                .takes_value(true)
                 .default_value("2048")
                 .validator(|bufsize| {
                     bufsize
