@@ -19,7 +19,8 @@ RUN dpkg --add-architecture armel && \
         libgstreamer-plugins-base1.0-dev:armel \
         gstreamer1.0-plugins-base:armel \
         gstreamer1.0-plugins-good:armel \
-        gstreamer1.0-libav libgstrtspserver-1.0-dev:armel 
+        gstreamer1.0-libav libgstrtspserver-1.0-dev:armel \
+        pkg-config:armel
 
 ENV CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_LINKER=arm-linux-gnueabi-gcc \
     CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_RUNNER=qemu-arm \
