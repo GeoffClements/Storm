@@ -9,6 +9,63 @@ use proto;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
+#[derive(Copy, Clone)]
+enum AudioService {
+    Auto,
+    Alsa,
+    Pulse,
+}
+
+#[derive(Clone)]
+pub struct AudioDevice {
+    service: AudioService,
+    device: Option<String>,
+}
+
+impl Default for AudioDevice {
+    fn default() -> Self {
+        AudioDevice {
+            service: AudioService::Auto,
+            device: None,
+        }
+    }
+}
+
+impl<'a> From<Vec<&'a str>> for AudioDevice {
+    fn from(v: Vec<&str>) -> Self {
+        if v.len() == 0 {
+            return AudioDevice::default();
+        }
+
+        match v[0] {
+            "auto" => AudioDevice::default(),
+            "alsa" => {
+                let device = if v.len() > 1 {
+                    Some(v[1].to_owned())
+                } else {
+                    None
+                };
+                AudioDevice {
+                    service: AudioService::Alsa,
+                    device: device,
+                }
+            }
+            "pulse" => {
+                let device = if v.len() > 1 {
+                    Some(v[1].to_owned())
+                } else {
+                    None
+                };
+                AudioDevice {
+                    service: AudioService::Pulse,
+                    device: device,
+                }
+            }
+            _ => AudioDevice::default(),
+        }
+    }
+}
+
 pub enum PlayerControl {
     Gain(f64, f64),
     Enable(bool),
@@ -59,16 +116,18 @@ impl actix::Message for PlayerMessages {
 pub struct Player {
     gain: f64,
     enable: bool,
+    output_device: AudioDevice,
     thread: Option<thread_control::Control>,
     pub proto: actix::Addr<proto::Proto>,
     pipeline: Option<gst::Pipeline>,
 }
 
 impl Player {
-    pub fn new(proto: actix::Addr<proto::Proto>) -> Self {
+    pub fn new(proto: actix::Addr<proto::Proto>, output_device: AudioDevice) -> Self {
         Player {
             gain: 1.0,
             enable: false,
+            output_device: output_device,
             thread: None,
             proto: proto,
             pipeline: None,
@@ -161,7 +220,7 @@ impl actix::Handler<PlayerControl> for Player {
                 ]);
 
                 if elements.values().any(|e| e.is_none()) {
-                    error!("Unable to instnciate stream elements");
+                    error!("Unable to instantiate stream elements");
                     return;
                 }
 

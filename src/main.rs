@@ -25,7 +25,7 @@ use log::LevelFilter;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 
-const VERSION: &'static str = "0.1.0";
+const VERSION: &'static str = "0.2.0";
 
 fn main() {
     let opts = clap::App::new("Storm")
@@ -71,6 +71,24 @@ fn main() {
                         .map(|_| ())
                         .map_err(|_| format!("Unable to to parse {}", bufsize))
                 }),
+        )
+        .arg(
+            clap::Arg::with_name("output-device")
+                .short("o")
+                .long("output-device")
+                .help("Specify output device")
+                .default_value("auto")
+                .value_delimiter("!")
+                .long_help(
+"The output device is specified using SERVICE!DEVICE, e.g. alsa!hw:0,0.
+Allowed services are: \"auto\", \"alsa\" and \"pulse\".
+Selecting \"auto\" will let Storm choose the best device.
+For \"alsa\" and \"pulse\" the device is specified as usual for those services,
+e.g:
+- alsa!default, alsa!plughw:0,0 or even alsa!pulse
+- pulse!alsa_output.pci-0000_00_1f.3.analog-stereo
+The default for that service is used if no device is specified",
+                ),
         )
         .get_matches();
 
@@ -118,5 +136,6 @@ fn main() {
         None,
         opts.value_of("name").unwrap(),
         opts.value_of("buffersize").unwrap().parse::<u32>().unwrap() * 1024,
+        player::AudioDevice::from(opts.values_of("output-device").unwrap().collect::<Vec<&str>>()),
     );
 }

@@ -24,6 +24,7 @@ pub struct Proto {
     stat_data: codec::StatData,
     server_ip: Ipv4Addr,
     name: String,
+    output_device: player::AudioDevice,
     autostart: bool,
     player: actix::Addr<player::Player>,
     framed: actix::io::FramedWrite<WriteHalf<TcpStream>, codec::SlimCodec>,
@@ -87,7 +88,13 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 sync_group_id,
             } => {
                 info!("Got serv message");
-                spawn_proto(ip_address, sync_group_id, self.name.as_str(), self.stat_data.buffer_size);
+                spawn_proto(
+                    ip_address,
+                    sync_group_id,
+                    self.name.as_str(),
+                    self.stat_data.buffer_size,
+                    self.output_device.clone(),
+                );
                 ctx.stop();
             }
 
@@ -273,9 +280,7 @@ impl actix::Handler<player::PlayerMessages> for Proto {
                     self.framed.write(self.stat_data.make_stat_message("STMl"));
                     self.autostart = true;
                 }
-            } 
-            
-            // player::PlayerMessages::Underrun => {
+            } // player::PlayerMessages::Underrun => {
             //     self.framed.write(self.stat_data.make_stat_message("STMu"));
             // }
 
@@ -293,21 +298,33 @@ impl Proto {
     }
 }
 
-pub fn run(server_ip: Ipv4Addr, sync_group: Option<String>, name: &str, bufsize: u32) {
+pub fn run(
+    server_ip: Ipv4Addr,
+    sync_group: Option<String>,
+    name: &str,
+    bufsize: u32,
+    output_device: player::AudioDevice,
+) {
     let sys = System::new("Storm");
-    spawn_proto(server_ip, sync_group, name, bufsize);
+    spawn_proto(server_ip, sync_group, name, bufsize, output_device);
     spawn_signal_handler();
     sys.run();
 }
 
-fn spawn_proto(server_ip: Ipv4Addr, sync_group: Option<String>, name: &str, bufsize: u32) {
+fn spawn_proto(
+    server_ip: Ipv4Addr,
+    sync_group: Option<String>,
+    name: &str,
+    bufsize: u32,
+    output_device: player::AudioDevice,
+) {
     let name = name.to_owned();
     let addr = SocketAddr::new(IpAddr::V4(server_ip), 3483);
     Arbiter::spawn(
         TcpStream::connect(&addr)
             .and_then(move |stream| {
                 Proto::create(move |ctx| {
-                    let player = player::Player::new(ctx.address());
+                    let player = player::Player::new(ctx.address(), output_device.clone());
                     let (r, w) = stream.split();
                     ctx.add_stream(FramedRead::new(r, codec::SlimCodec));
                     let mut proto = Proto {
@@ -316,6 +333,7 @@ fn spawn_proto(server_ip: Ipv4Addr, sync_group: Option<String>, name: &str, bufs
                         stat_data: codec::StatData::default(),
                         server_ip: server_ip,
                         name: name,
+                        output_device: output_device,
                         autostart: true,
                         player: player.start(),
                         framed: actix::io::FramedWrite::new(w, codec::SlimCodec, ctx),
