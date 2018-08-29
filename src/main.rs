@@ -75,19 +75,19 @@ fn main() {
         .arg(
             clap::Arg::with_name("output-device")
                 .short("o")
-                .long("output-device")
+                .long("output")
                 .help("Specify output device")
                 .default_value("auto")
-                .value_delimiter("!")
+                .value_delimiter("#")
                 .long_help(
-"The output device is specified using SERVICE!DEVICE, e.g. alsa!hw:0,0.
+"The output device is specified using SERVICE[#DEVICE], e.g. alsa#hw:0,0.
 Allowed services are: \"auto\", \"alsa\" and \"pulse\".
 Selecting \"auto\" will let Storm choose the best device.
 For \"alsa\" and \"pulse\" the device is specified as usual for those services,
 e.g:
-- alsa!default, alsa!plughw:0,0 or even alsa!pulse
-- pulse!alsa_output.pci-0000_00_1f.3.analog-stereo
-The default for that service is used if no device is specified",
+- alsa#default, alsa#plughw:0,0 or even alsa#pulse
+- pulse#alsa_output.pci-0000_00_1f.3.analog-stereo
+If no device is specified the default for that service is used.",
                 ),
         )
         .get_matches();

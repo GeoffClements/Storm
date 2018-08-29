@@ -33,6 +33,7 @@ impl Default for AudioDevice {
 
 impl<'a> From<Vec<&'a str>> for AudioDevice {
     fn from(v: Vec<&str>) -> Self {
+        info!("Output-device: {:?}", v);
         if v.len() == 0 {
             return AudioDevice::default();
         }
@@ -61,7 +62,10 @@ impl<'a> From<Vec<&'a str>> for AudioDevice {
                     device: device,
                 }
             }
-            _ => AudioDevice::default(),
+            _ => {
+                warn!("Unable to parse output device, falling back to auto output selection");
+                AudioDevice::default()
+            }
         }
     }
 }
@@ -169,6 +173,11 @@ impl actix::Handler<PlayerControl> for Player {
                 } else {
                     gain_right
                 };
+                self.gain = if self.gain > 1.0 {
+                    1.0
+                } else {
+                    self.gain
+                };
                 info!("Setting gain to {}", self.gain);
                 if let Some(pipeline) = self.pipeline.clone() {
                     if let Some(volume) = pipeline.get_by_name("volume") {
@@ -216,8 +225,16 @@ impl actix::Handler<PlayerControl> for Player {
                     ),
                     ("volume", gst::ElementFactory::make("volume", "volume")),
                     ("obuf", gst::ElementFactory::make("queue", "obuf")),
-                    ("sink", gst::ElementFactory::make("autoaudiosink", "sink")),
+                    // ("sink", gst::ElementFactory::make("autoaudiosink", "sink")),
                 ]);
+
+                let sink = match self.output_device.service {
+                    AudioService::Auto => gst::ElementFactory::make("autoaudiosink", "sink"),
+                    AudioService::Alsa => gst::ElementFactory::make("alsasink", "sink"),
+                    AudioService::Pulse => gst::ElementFactory::make("pulsesink", "sink"),
+                };
+
+                elements.insert("sink", sink);
 
                 if elements.values().any(|e| e.is_none()) {
                     error!("Unable to instantiate stream elements");
@@ -371,6 +388,23 @@ impl actix::Handler<PlayerControl> for Player {
                         let _ = src_pad.link(&sink_pad);
                     }
                 });
+
+                if let Some(sink) = elements.get("sink") {
+                    let service = match self.output_device.service {
+                        AudioService::Alsa => "ALSA",
+                        AudioService::Pulse => "PULSEAUDIO",
+                        _ => "AUTO",
+                    };
+                    if let Some(ref device) = self.output_device.device {
+                        sink.set_property("device", &device).unwrap();
+                    }
+                    let device = if let Ok(prop) = sink.get_property("device-name") {
+                        prop.get().unwrap_or("default".to_owned())
+                    } else {
+                        "default".to_owned()
+                    };
+                    info!("Using audio service: {} with device: {}", service, device);
+                }
 
                 let proto = self.proto.clone();
                 let (flag, control) = thread_control::make_pair();

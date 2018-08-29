@@ -7,9 +7,14 @@ Storm is similar to [squeezelite](https://github.com/ralph-irving/squeezelite) b
 
 In addition storm reuses media code in the form of [gstreamer](https://gstreamer.freedesktop.org/) rather than trying to do it all itself. Storm fills the same function as squeezelite but does so in a very different way. Although making a small executable was not a primary aim, an optimised and stripped binary will be less than 3MiB which makes it quite small and so would be suitable to run on small devices.
 
+## Using
 To see the run-time options type:
 ```bash
 $ storm -h
+```
+or for more detail use:
+```bash
+$ storm --help
 ```
 
 ## Building
