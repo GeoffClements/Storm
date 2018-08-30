@@ -33,12 +33,12 @@ impl Default for AudioDevice {
 
 impl<'a> From<Vec<&'a str>> for AudioDevice {
     fn from(v: Vec<&str>) -> Self {
-        info!("Output-device: {:?}", v);
+        // info!("Output-device: {:?}", v);
         if v.len() == 0 {
             return AudioDevice::default();
         }
 
-        match v[0] {
+        match v[0].to_lowercase().as_str() {
             "auto" => AudioDevice::default(),
             "alsa" => {
                 let device = if v.len() > 1 {

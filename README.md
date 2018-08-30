@@ -19,7 +19,7 @@ $ storm --help
 
 ## Building
 Storm is written in Rust and links to the gstreamer library. In order to build you will needed to install the following dependencies:
-- ibgstreamer1.0-dev
+- libgstreamer1.0-dev
 - libgstreamer-plugins-base1.0-dev
 - gstreamer1.0-plugins-base
 - gstreamer1.0-plugins-good
