@@ -6,7 +6,7 @@ use thread_control;
 
 use proto;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::Ipv4Addr;
 
 #[derive(Copy, Clone)]
@@ -123,29 +123,239 @@ pub struct Player {
     output_device: AudioDevice,
     thread: Option<thread_control::Control>,
     pub proto: actix::Addr<proto::Proto>,
-    pipeline: Option<gst::Pipeline>,
+    pipeline: gst::Pipeline,
+    sources: VecDeque<gst::Element>,
 }
 
 impl Player {
     pub fn new(proto: actix::Addr<proto::Proto>, output_device: AudioDevice) -> Self {
+        if let Err(e) = gst::init() {
+            error!("Unable to initialise GStreamer: {}", e);
+            ::std::process::exit(1);
+        }
+
         Player {
             gain: 1.0,
             enable: false,
             output_device: output_device,
             thread: None,
             proto: proto,
-            pipeline: None,
+            pipeline: gst::Pipeline::new("stormpipe"),
+            sources: VecDeque::with_capacity(2),
+        }
+    }
+
+    fn fill_pipeline(&mut self) {
+        if self.pipeline.get_by_name("sink").is_some() {
+            return;
+        }
+
+        info!("Filling Pipeline");
+
+        let mut elements = HashMap::new();
+        elements.extend(vec![
+            ("cat", gst::ElementFactory::make("concat", "cat")),
+            ("ibuf", gst::ElementFactory::make("queue", "ibuf")),
+            ("decoder", gst::ElementFactory::make("decodebin", "decoder")),
+            (
+                "converter",
+                gst::ElementFactory::make("audioconvert", "converter"),
+            ),
+            (
+                "resampler",
+                gst::ElementFactory::make("audioresample", "resampler"),
+            ),
+            ("volume", gst::ElementFactory::make("volume", "volume")),
+            ("obuf", gst::ElementFactory::make("queue", "obuf")),
+        ]);
+
+        let sink = match self.output_device.service {
+            AudioService::Auto => gst::ElementFactory::make("autoaudiosink", "sink"),
+            AudioService::Alsa => gst::ElementFactory::make("alsasink", "sink"),
+            AudioService::Pulse => gst::ElementFactory::make("pulsesink", "sink"),
+        };
+
+        elements.insert("sink", sink);
+
+        if elements.values().any(|e| e.is_none()) {
+            error!("Unable to instantiate stream elements");
+            return;
+        }
+
+        // From this point on element unwraps are safe
+
+        let elements: HashMap<&str, gst::Element> =
+            elements.into_iter().map(|(k, v)| (k, v.unwrap())).collect();
+
+        for element in elements.values() {
+            if let Err(_) = self.pipeline.add(element) {
+                error!("Error adding elements to pipeline");
+                return;
+            }
+        }
+
+        for elems in ["cat", "ibuf", "decoder"].windows(2) {
+            if let Err(_) = elements
+                .get(elems[0])
+                .unwrap()
+                .link(elements.get(elems[1]).unwrap())
+            {
+                error!("Cannot link elements");
+                return;
+            }
+        }
+
+        for elems in ["converter", "resampler", "volume", "obuf", "sink"].windows(2) {
+            if let Err(_) = elements
+                .get(elems[0])
+                .unwrap()
+                .link(elements.get(elems[1]).unwrap())
+            {
+                error!("Cannot link elements");
+                return;
+            }
+        }
+
+        let decoder = elements.get("decoder").unwrap();
+        let converter_weak = elements.get("converter").unwrap().downgrade();
+        decoder.connect_pad_added(move |_, src_pad| {
+            let converter = match converter_weak.upgrade() {
+                Some(converter) => converter,
+                None => return,
+            };
+
+            let sink_pad = converter
+                .get_static_pad("sink")
+                .expect("Failed to get static sink pad from convert");
+            if sink_pad.is_linked() {
+                info!("We are already linked. Ignoring.");
+                return;
+            }
+
+            let new_pad_caps = src_pad
+                .get_current_caps()
+                .expect("Failed to get caps of new pad.");
+            let new_pad_struct = new_pad_caps
+                .get_structure(0)
+                .expect("Failed to get first structure of caps.");
+            let new_pad_type = new_pad_struct.get_name();
+
+            if new_pad_type.starts_with("audio/x-raw") {
+                info!("Linking decoder to converter");
+                let _ = src_pad.link(&sink_pad);
+            }
+        });
+
+        if let Some(sink) = elements.get("sink") {
+            let service = match self.output_device.service {
+                AudioService::Alsa => "ALSA",
+                AudioService::Pulse => "PULSEAUDIO",
+                _ => "AUTO",
+            };
+            if let Some(ref device) = self.output_device.device {
+                sink.set_property("device", &device).unwrap();
+            }
+            let device = if let Ok(prop) = sink.get_property("device-name") {
+                prop.get().unwrap_or("default".to_owned())
+            } else {
+                "default".to_owned()
+            };
+            info!("Using audio service: {} with device: {}", service, device);
+        }
+
+        let proto = self.proto.clone();
+        let (flag, control) = thread_control::make_pair();
+        self.thread = Some(control);
+        let bus = self.pipeline.get_bus().unwrap();
+        let pipeline_weak = self.pipeline.downgrade();
+        ::std::thread::spawn(move || {
+            let pipeline = match pipeline_weak.upgrade() {
+                Some(pipeline) => pipeline,
+                None => return,
+            };
+
+            loop {
+                let msg = bus.timed_pop(gst::ClockTime::from_mseconds(100));
+                if !flag.is_alive() {
+                    break;
+                }
+
+                // println!("{:?}", msg);
+                match msg {
+                    Some(msg) => match msg.view() {
+                        MessageView::Error(error) => {
+                            error!(
+                                "Stream error: {}",
+                                if let Some(e) = error.get_debug() {
+                                    e
+                                } else {
+                                    "undefined".to_owned()
+                                }
+                            );
+                            proto.do_send(PlayerMessages::Error);
+                            break;
+                        }
+
+                        MessageView::Eos(..) => {
+                            info!("End of stream detected");
+                            proto.do_send(PlayerMessages::Eos);
+                        }
+
+                        MessageView::Element(element) => {
+                            if let Some(source) = element.get_src() {
+                                if source.get_name() == "source" {
+                                    if let Some(structure) = element.get_structure() {
+                                        if structure.get_name() == "http-headers" {
+                                            proto.do_send(PlayerMessages::Established);
+                                            let crlf = structure.iter().count() as u8;
+                                            proto.do_send(PlayerMessages::Headers(crlf));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        MessageView::StateChanged(state) => {
+                            if let Some(source) = state.get_src() {
+                                if source.get_name() == "stormpipe" {
+                                    if state.get_current() == gst::State::Null {
+                                        info!("Pipeline moved to null state");
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        MessageView::StreamStart(..) => {
+                            info!("Stream is starting");
+                            proto.do_send(PlayerMessages::Start);
+                        }
+
+                        _ => (),
+                    },
+
+                    None => {
+                        proto.do_send(PlayerMessages::Streamdata {
+                            position: query_pos(&pipeline),
+                            fullness: buffer_fullness(&pipeline, "ibuf"),
+                            output_buffer_fullness: buffer_fullness(&pipeline, "obuf"),
+                        });
+                    }
+                }
+            }
+        });
+
+        if self.pipeline.set_state(gst::State::Playing) == gst::StateChangeReturn::Failure {
+            error!("Unable to set the pipeline to the Playing state");
         }
     }
 
     fn stream_stop(&mut self) {
-        if let Some(pipeline) = self.pipeline.take() {
-            if pipeline.set_state(gst::State::Null) != gst::StateChangeReturn::Failure {
-                info!("Stopping stream");
-                self.proto.do_send(PlayerMessages::Flushed);
-                if let Some(ref control) = self.thread {
-                    control.stop();
-                }
+        if self.pipeline.set_state(gst::State::Ready) != gst::StateChangeReturn::Failure {
+            info!("Stopping stream");
+            self.proto.do_send(PlayerMessages::Flushed);
+            if let Some(ref control) = self.thread {
+                control.stop();
             }
         }
     }
@@ -153,13 +363,6 @@ impl Player {
 
 impl actix::Actor for Player {
     type Context = actix::Context<Self>;
-
-    fn started(&mut self, _ctx: &mut actix::Context<Self>) {
-        match gst::init() {
-            Ok(_) => (),
-            Err(e) => error!("Unable to initialise GStreamer: {}", e),
-        }
-    }
 }
 
 impl actix::Handler<PlayerControl> for Player {
@@ -179,20 +382,16 @@ impl actix::Handler<PlayerControl> for Player {
                     self.gain
                 };
                 info!("Setting gain to {}", self.gain);
-                if let Some(pipeline) = self.pipeline.clone() {
-                    if let Some(volume) = pipeline.get_by_name("volume") {
-                        volume.set_property("volume", &self.gain).unwrap();
-                    }
+                if let Some(volume) = self.pipeline.get_by_name("volume") {
+                    volume.set_property("volume", &self.gain).unwrap();
                 }
             }
 
             PlayerControl::Enable(enable) => {
                 info!("Setting enable to {}", enable);
                 self.enable = enable;
-                if let Some(pipeline) = self.pipeline.clone() {
-                    if let Some(volume) = pipeline.get_by_name("volume") {
-                        volume.set_property("mute", &!enable).unwrap();
-                    }
+                if let Some(volume) = self.pipeline.get_by_name("volume") {
+                    volume.set_property("mute", &!enable).unwrap();
                 }
             }
 
@@ -208,73 +407,7 @@ impl actix::Handler<PlayerControl> for Player {
             } => {
                 info!("Got stream request, autostart: {}", autostart);
 
-                self.stream_stop();
-
-                let mut elements = HashMap::new();
-                elements.extend(vec![
-                    ("source", gst::ElementFactory::make("souphttpsrc", "source")),
-                    ("ibuf", gst::ElementFactory::make("queue", "ibuf")),
-                    ("decoder", gst::ElementFactory::make("decodebin", "decoder")),
-                    (
-                        "converter",
-                        gst::ElementFactory::make("audioconvert", "converter"),
-                    ),
-                    (
-                        "resampler",
-                        gst::ElementFactory::make("audioresample", "resampler"),
-                    ),
-                    ("volume", gst::ElementFactory::make("volume", "volume")),
-                    ("obuf", gst::ElementFactory::make("queue", "obuf")),
-                    // ("sink", gst::ElementFactory::make("autoaudiosink", "sink")),
-                ]);
-
-                let sink = match self.output_device.service {
-                    AudioService::Auto => gst::ElementFactory::make("autoaudiosink", "sink"),
-                    AudioService::Alsa => gst::ElementFactory::make("alsasink", "sink"),
-                    AudioService::Pulse => gst::ElementFactory::make("pulsesink", "sink"),
-                };
-
-                elements.insert("sink", sink);
-
-                if elements.values().any(|e| e.is_none()) {
-                    error!("Unable to instantiate stream elements");
-                    return;
-                }
-
-                // From this point on element unwraps are safe
-
-                let elements: HashMap<&str, gst::Element> =
-                    elements.into_iter().map(|(k, v)| (k, v.unwrap())).collect();
-
-                let pipeline = gst::Pipeline::new("stormpipe");
-                for element in elements.values() {
-                    if let Err(_) = pipeline.add(element) {
-                        error!("Error adding elements to pipeline");
-                        return;
-                    }
-                }
-
-                for elems in ["source", "ibuf", "decoder"].windows(2) {
-                    if let Err(_) = elements
-                        .get(elems[0])
-                        .unwrap()
-                        .link(elements.get(elems[1]).unwrap())
-                    {
-                        error!("Cannot link elements");
-                        return;
-                    }
-                }
-
-                for elems in ["converter", "resampler", "volume", "obuf", "sink"].windows(2) {
-                    if let Err(_) = elements
-                        .get(elems[0])
-                        .unwrap()
-                        .link(elements.get(elems[1]).unwrap())
-                    {
-                        error!("Cannot link elements");
-                        return;
-                    }
-                }
+                self.fill_pipeline();
 
                 let server_ip = if server_ip == Ipv4Addr::new(0, 0, 0, 0) {
                     control_ip
@@ -292,15 +425,16 @@ impl actix::Handler<PlayerControl> for Player {
                     String::new()
                 };
 
-                info!("http://{}:{}{}", server_ip, server_port, get);
+                let location = format!("http://{}:{}{}", server_ip, server_port, get);
+                info!("{}", location);
 
-                if let Some(source) = elements.get("source") {
-                    source
-                        .set_property(
-                            "location",
-                            &format!("http://{}:{}{}", server_ip, server_port, get),
-                        )
-                        .unwrap();
+                if let Some(source) = gst::ElementFactory::make("souphttpsrc", None) {
+                    self.pipeline.add(&source).unwrap();
+                    if let Some(concat) = self.pipeline.get_by_name("cat") {
+                        source.link(&concat).unwrap();
+                    }
+
+                    source.set_property("location", &location).unwrap();
                     source
                         .set_property("user-agent", &"Storm".to_owned())
                         .unwrap();
@@ -324,9 +458,10 @@ impl actix::Handler<PlayerControl> for Player {
                             },
                         );
                     }
+                    self.sources.push_back(source);
                 }
 
-                if let Some(ibuf) = elements.get("ibuf") {
+                if let Some(ibuf) = self.pipeline.get_by_name("ibuf") {
                     ibuf.set_property("max-size-bytes", &(&threshold * 32))
                         .unwrap();
                     let proto = self.proto.clone();
@@ -340,7 +475,7 @@ impl actix::Handler<PlayerControl> for Player {
                     // }).unwrap();
                 };
 
-                if let Some(obuf) = elements.get("obuf") {
+                if let Some(obuf) = self.pipeline.get_by_name("obuf") {
                     obuf.set_property("max-size-time", &(&output_threshold * 1))
                         .unwrap();
                     // let proto = self.proto.clone();
@@ -350,7 +485,7 @@ impl actix::Handler<PlayerControl> for Player {
                     // }).unwrap();
                 };
 
-                if let Some(volume) = elements.get("volume") {
+                if let Some(volume) = self.pipeline.get_by_name("volume") {
                     let gain = if replay_gain < 0.0001 {
                         self.gain
                     } else {
@@ -359,139 +494,6 @@ impl actix::Handler<PlayerControl> for Player {
                     volume.set_property("volume", &gain).unwrap();
                     volume.set_property("mute", &!self.enable).unwrap();
                 }
-
-                let decoder = elements.get("decoder").unwrap();
-                let converter_weak = elements.get("converter").unwrap().downgrade();
-                decoder.connect_pad_added(move |_, src_pad| {
-                    let converter = match converter_weak.upgrade() {
-                        Some(converter) => converter,
-                        None => return,
-                    };
-
-                    let sink_pad = converter
-                        .get_static_pad("sink")
-                        .expect("Failed to get static sink pad from convert");
-                    if sink_pad.is_linked() {
-                        info!("We are already linked. Ignoring.");
-                        return;
-                    }
-
-                    let new_pad_caps = src_pad
-                        .get_current_caps()
-                        .expect("Failed to get caps of new pad.");
-                    let new_pad_struct = new_pad_caps
-                        .get_structure(0)
-                        .expect("Failed to get first structure of caps.");
-                    let new_pad_type = new_pad_struct.get_name();
-
-                    if new_pad_type.starts_with("audio/x-raw") {
-                        let _ = src_pad.link(&sink_pad);
-                    }
-                });
-
-                if let Some(sink) = elements.get("sink") {
-                    let service = match self.output_device.service {
-                        AudioService::Alsa => "ALSA",
-                        AudioService::Pulse => "PULSEAUDIO",
-                        _ => "AUTO",
-                    };
-                    if let Some(ref device) = self.output_device.device {
-                        sink.set_property("device", &device).unwrap();
-                    }
-                    let device = if let Ok(prop) = sink.get_property("device-name") {
-                        prop.get().unwrap_or("default".to_owned())
-                    } else {
-                        "default".to_owned()
-                    };
-                    info!("Using audio service: {} with device: {}", service, device);
-                }
-
-                let proto = self.proto.clone();
-                let (flag, control) = thread_control::make_pair();
-                self.thread = Some(control);
-                let bus = pipeline.get_bus().unwrap();
-                let pipeline_weak = pipeline.downgrade();
-                ::std::thread::spawn(move || {
-                    let pipeline = match pipeline_weak.upgrade() {
-                        Some(pipeline) => pipeline,
-                        None => return,
-                    };
-
-                    loop {
-                        let msg = bus.timed_pop(gst::ClockTime::from_mseconds(100));
-                        if !flag.is_alive() {
-                            break;
-                        }
-
-                        // println!("{:?}", msg);
-                        match msg {
-                            Some(msg) => match msg.view() {
-                                MessageView::Error(error) => {
-                                    error!(
-                                        "Stream error: {}",
-                                        if let Some(e) = error.get_debug() {
-                                            e
-                                        } else {
-                                            "undefined".to_owned()
-                                        }
-                                    );
-                                    proto.do_send(PlayerMessages::Error);
-                                    break;
-                                }
-
-                                MessageView::Eos(..) => {
-                                    info!("End of stream detected");
-                                    proto.do_send(PlayerMessages::Eos);
-                                }
-
-                                MessageView::Element(element) => {
-                                    if let Some(source) = element.get_src() {
-                                        if source.get_name() == "source" {
-                                            if let Some(structure) = element.get_structure() {
-                                                if structure.get_name() == "http-headers" {
-                                                    proto.do_send(PlayerMessages::Established);
-                                                    let crlf = structure.iter().count() as u8;
-                                                    proto.do_send(PlayerMessages::Headers(crlf));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                MessageView::StateChanged(state) => {
-                                    if let Some(source) = state.get_src() {
-                                        if source.get_name() == "stormpipe" {
-                                            if state.get_current() == gst::State::Null {
-                                                info!("Pipeline moved to null state");
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                MessageView::StreamStart(..) => {
-                                    proto.do_send(PlayerMessages::Start);
-                                }
-
-                                _ => (),
-                            },
-
-                            None => {
-                                proto.do_send(PlayerMessages::Streamdata {
-                                    position: query_pos(&pipeline),
-                                    fullness: buffer_fullness(&pipeline, "ibuf"),
-                                    output_buffer_fullness: buffer_fullness(&pipeline, "obuf"),
-                                });
-                            }
-                        }
-                    }
-                });
-
-                if pipeline.set_state(gst::State::Playing) == gst::StateChangeReturn::Failure {
-                    error!("Unable to set the pipeline to the Playing state");
-                }
-
-                self.pipeline = Some(pipeline);
             }
 
             PlayerControl::Stop => {
@@ -499,49 +501,43 @@ impl actix::Handler<PlayerControl> for Player {
             }
 
             PlayerControl::Pause(quiet) => {
-                if let Some(ref pipeline) = self.pipeline {
-                    info!("Pausing stream");
-                    if pipeline.set_state(gst::State::Paused) != gst::StateChangeReturn::Failure {
-                        if !quiet {
-                            self.proto.do_send(PlayerMessages::Paused);
-                        }
+                info!("Pausing stream");
+                if self.pipeline.set_state(gst::State::Paused) != gst::StateChangeReturn::Failure {
+                    if !quiet {
+                        self.proto.do_send(PlayerMessages::Paused);
                     }
                 }
             }
 
             PlayerControl::Unpause(quiet) => {
-                if let Some(ref pipeline) = self.pipeline {
-                    info!("Resuming stream");
-                    if pipeline.set_state(gst::State::Playing) != gst::StateChangeReturn::Failure {
-                        if !quiet {
-                            self.proto.do_send(PlayerMessages::Unpaused);
-                        }
+                info!("Resuming stream");
+                if self.pipeline.set_state(gst::State::Playing) != gst::StateChangeReturn::Failure {
+                    if !quiet {
+                        self.proto.do_send(PlayerMessages::Unpaused);
                     }
                 }
             }
 
             PlayerControl::Skip(interval) => {
-                if let Some(ref pipeline) = self.pipeline {
-                    let newpos = query_pos(pipeline) + interval as u64;
-                    info!("Skipping to postition: {}", newpos);
-                    let flags = {
-                        let (_, state, _) = pipeline.get_state(gst::ClockTime::none());
-                        if state == gst::State::Playing {
-                            gst::SeekFlags::SKIP
-                        } else {
-                            gst::SeekFlags::SKIP | gst::SeekFlags::FLUSH
-                        }
-                    };
-                    let seek = gst::Event::new_seek(
-                        1.0,
-                        flags,
-                        gst::SeekType::Set,
-                        gst::ClockTime::from_mseconds(newpos),
-                        gst::SeekType::None,
-                        gst::ClockTime::none(),
-                    ).build();
-                    pipeline.send_event(seek);
-                }
+                let newpos = query_pos(&self.pipeline) + interval as u64;
+                info!("Skipping to postition: {}", newpos);
+                let flags = {
+                    let (_, state, _) = self.pipeline.get_state(gst::ClockTime::none());
+                    if state == gst::State::Playing {
+                        gst::SeekFlags::SKIP
+                    } else {
+                        gst::SeekFlags::SKIP | gst::SeekFlags::FLUSH
+                    }
+                };
+                let seek = gst::Event::new_seek(
+                    1.0,
+                    flags,
+                    gst::SeekType::Set,
+                    gst::ClockTime::from_mseconds(newpos),
+                    gst::SeekType::None,
+                    gst::ClockTime::none(),
+                ).build();
+                self.pipeline.send_event(seek);
             }
         }
     }
