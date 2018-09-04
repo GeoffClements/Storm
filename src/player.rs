@@ -87,6 +87,7 @@ pub enum PlayerControl {
     Pause(bool),
     Unpause(bool),
     Skip(u32),
+    Deletesource,
 }
 
 impl actix::Message for PlayerControl {
@@ -150,8 +151,6 @@ impl Player {
             return;
         }
 
-        info!("Filling Pipeline");
-
         let mut elements = HashMap::new();
         elements.extend(vec![
             ("cat", gst::ElementFactory::make("concat", "cat")),
@@ -214,6 +213,38 @@ impl Player {
                 error!("Cannot link elements");
                 return;
             }
+        }
+
+        if let Some(concat) = elements.get("cat") {
+            if let Some(src_pad) = concat.get_static_pad("src") {
+                let proto = self.proto.clone();
+                src_pad.add_probe(
+                    gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+                    move |_, probe_info| {
+                        let buf_size = match probe_info.data {
+                            Some(gst::PadProbeData::Buffer(ref buffer)) => buffer.get_size(),
+                            Some(gst::PadProbeData::BufferList(ref buflist)) => {
+                                buflist.iter().map(|b| b.get_size()).sum()
+                            }
+                            _ => 0,
+                        };
+                        proto.do_send(PlayerMessages::Bufsize(buf_size));
+                        gst::PadProbeReturn::Ok
+                    },
+                );
+            }
+        }
+
+        if let Some(ibuf) = elements.get("ibuf") {
+            let proto = self.proto.clone();
+            ibuf.connect("overrun", true, move |_| {
+                proto.do_send(PlayerMessages::Overrun);
+                None
+            }).unwrap();
+            // ibuf.connect("underrun", true, move |_| {
+            //     proto.do_send(PlayerMessages::Underrun);
+            //     None
+            // }).unwrap();
         }
 
         let decoder = elements.get("decoder").unwrap();
@@ -293,7 +324,6 @@ impl Player {
                                 }
                             );
                             proto.do_send(PlayerMessages::Error);
-                            break;
                         }
 
                         MessageView::Eos(..) => {
@@ -320,7 +350,6 @@ impl Player {
                                 if source.get_name() == "stormpipe" {
                                     if state.get_current() == gst::State::Null {
                                         info!("Pipeline moved to null state");
-                                        break;
                                     }
                                 }
                             }
@@ -344,19 +373,33 @@ impl Player {
                 }
             }
         });
+    }
 
-        if self.pipeline.set_state(gst::State::Playing) == gst::StateChangeReturn::Failure {
-            error!("Unable to set the pipeline to the Playing state");
+    fn delete_all_sources(&mut self) {
+        while let Some(source) = self.sources.pop_front() {
+            self.delete_source(source);
         }
     }
 
-    fn stream_stop(&mut self) {
-        if self.pipeline.set_state(gst::State::Ready) != gst::StateChangeReturn::Failure {
-            info!("Stopping stream");
-            self.proto.do_send(PlayerMessages::Flushed);
-            if let Some(ref control) = self.thread {
-                control.stop();
+    fn delete_last_source(&mut self) {
+        if let Some(source) = self.sources.pop_front() {
+            self.delete_source(source);
+        }
+    }
+
+    fn delete_source(&mut self, source: gst::Element) {
+        if let Some(src_pad) = source.get_static_pad("src") {
+            if let Some(peer_pad) = src_pad.get_peer() {
+                if let Ok(_) = src_pad.unlink(&peer_pad) {
+                    if let Some(concat) = self.pipeline.get_by_name("cat") {
+                        concat.release_request_pad(&peer_pad);
+                    }
+                }
             }
+        }
+        if source.set_state(gst::State::Null) != gst::StateChangeReturn::Failure {
+            info!("Destroying: {}", source.get_name());
+            let _ = self.pipeline.remove(&source);
         }
     }
 }
@@ -407,6 +450,9 @@ impl actix::Handler<PlayerControl> for Player {
             } => {
                 info!("Got stream request, autostart: {}", autostart);
 
+                if self.pipeline.set_state(gst::State::Ready) == gst::StateChangeReturn::Failure {
+                    error!("Unable to set the pipeline to the Playing state");
+                }
                 self.fill_pipeline();
 
                 let server_ip = if server_ip == Ipv4Addr::new(0, 0, 0, 0) {
@@ -429,6 +475,8 @@ impl actix::Handler<PlayerControl> for Player {
                 info!("{}", location);
 
                 if let Some(source) = gst::ElementFactory::make("souphttpsrc", None) {
+                    info!("Creating: {}", source.get_name());
+                    self.delete_last_source();
                     self.pipeline.add(&source).unwrap();
                     if let Some(concat) = self.pipeline.get_by_name("cat") {
                         source.link(&concat).unwrap();
@@ -439,50 +487,18 @@ impl actix::Handler<PlayerControl> for Player {
                         .set_property("user-agent", &"Storm".to_owned())
                         .unwrap();
 
-                    if let Some(src_pad) = source.get_static_pad("src") {
-                        let proto = self.proto.clone();
-                        src_pad.add_probe(
-                            gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
-                            move |_, probe_info| {
-                                let buf_size = match probe_info.data {
-                                    Some(gst::PadProbeData::Buffer(ref buffer)) => {
-                                        buffer.get_size()
-                                    }
-                                    Some(gst::PadProbeData::BufferList(ref buflist)) => {
-                                        buflist.iter().map(|b| b.get_size()).sum()
-                                    }
-                                    _ => 0,
-                                };
-                                proto.do_send(PlayerMessages::Bufsize(buf_size));
-                                gst::PadProbeReturn::Ok
-                            },
-                        );
-                    }
+                    let _ = source.sync_state_with_parent();
                     self.sources.push_back(source);
                 }
 
                 if let Some(ibuf) = self.pipeline.get_by_name("ibuf") {
                     ibuf.set_property("max-size-bytes", &(&threshold * 32))
                         .unwrap();
-                    let proto = self.proto.clone();
-                    ibuf.connect("overrun", true, move |_| {
-                        proto.do_send(PlayerMessages::Overrun);
-                        None
-                    }).unwrap();
-                    // ibuf.connect("underrun", true, move |_| {
-                    //     proto.do_send(PlayerMessages::Underrun);
-                    //     None
-                    // }).unwrap();
                 };
 
                 if let Some(obuf) = self.pipeline.get_by_name("obuf") {
                     obuf.set_property("max-size-time", &(&output_threshold * 1))
                         .unwrap();
-                    // let proto = self.proto.clone();
-                    // obuf.connect("underrun", true, move |_| {
-                    //     proto.do_send(PlayerMessages::Outputunderrun);
-                    //     None
-                    // }).unwrap();
                 };
 
                 if let Some(volume) = self.pipeline.get_by_name("volume") {
@@ -494,10 +510,18 @@ impl actix::Handler<PlayerControl> for Player {
                     volume.set_property("volume", &gain).unwrap();
                     volume.set_property("mute", &!self.enable).unwrap();
                 }
+
+                if self.pipeline.set_state(gst::State::Playing) == gst::StateChangeReturn::Failure {
+                    error!("Unable to set the pipeline to the Playing state");
+                }
             }
 
             PlayerControl::Stop => {
-                self.stream_stop();
+                if self.pipeline.set_state(gst::State::Ready) != gst::StateChangeReturn::Failure {
+                    info!("Stopped stream");
+                    self.proto.do_send(PlayerMessages::Flushed);
+                    self.delete_all_sources();
+                }
             }
 
             PlayerControl::Pause(quiet) => {
@@ -538,6 +562,12 @@ impl actix::Handler<PlayerControl> for Player {
                     gst::ClockTime::none(),
                 ).build();
                 self.pipeline.send_event(seek);
+            }
+
+            PlayerControl::Deletesource => {
+                if self.sources.len() > 1 {
+                    self.delete_last_source()
+                }
             }
         }
     }
