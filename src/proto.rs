@@ -257,7 +257,6 @@ impl actix::Handler<player::PlayerMessages> for Proto {
 
             player::PlayerMessages::Start => {
                 self.framed.write(self.stat_data.make_stat_message("STMs"));
-                // self.player.do_send(player::PlayerControl::Deletesource);
             }
 
             player::PlayerMessages::Streamdata {
