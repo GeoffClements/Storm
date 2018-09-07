@@ -302,10 +302,10 @@ impl Player {
                             proto.do_send(PlayerMessages::Error);
                         }
 
-                        MessageView::Eos(..) => {
-                            info!("End of stream detected");
-                            proto.do_send(PlayerMessages::Eos);
-                        }
+                        // MessageView::Eos(..) => {
+                        //     info!("End of stream detected");
+                        //     proto.do_send(PlayerMessages::Eos);
+                        // }
 
                         MessageView::Element(element) => {
                             if let Some(source) = element.get_src() {
@@ -331,9 +331,14 @@ impl Player {
                             }
                         }
 
-                        MessageView::StreamStart(..) => {
-                            info!("Stream is starting");
-                            proto.do_send(PlayerMessages::Start);
+                        // MessageView::StreamStart(..) => {
+                        //     info!("Stream is starting");
+                        //     proto.do_send(PlayerMessages::Start);
+                        // }
+
+                        MessageView::Latency(..) => {
+                            info!("Recalculating latency");
+                            let _ = pipeline.recalculate_latency();
                         }
 
                         _ => (),
@@ -415,49 +420,6 @@ impl actix::Handler<PlayerControl> for Player {
                 // }
                 self.fill_pipeline();
 
-                let source = {
-                    match self.pipeline.get_by_name("source") {
-                        Some(source) => source,
-                        None => match gst::ElementFactory::make("souphttpsrc", "source") {
-                            Some(source) => {
-                                info!("Creating new source");
-                                source
-                                    .set_property("user-agent", &"Storm".to_owned())
-                                    .unwrap();
-                                self.pipeline.add(&source).unwrap();
-                                let _ = source.sync_state_with_parent();
-                                if let Some(ibuf) = self.pipeline.get_by_name("ibuf") {
-                                    source.link(&ibuf).unwrap();
-                                }
-                                if let Some(src_pad) = source.get_static_pad("src") {
-                                    let proto = self.proto.clone();
-                                    src_pad.add_probe(
-                                        gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
-                                        move |_, probe_info| {
-                                            let buf_size = match probe_info.data {
-                                                Some(gst::PadProbeData::Buffer(ref buffer)) => {
-                                                    buffer.get_size()
-                                                }
-                                                Some(gst::PadProbeData::BufferList(
-                                                    ref buflist,
-                                                )) => buflist.iter().map(|b| b.get_size()).sum(),
-                                                _ => 0,
-                                            };
-                                            proto.do_send(PlayerMessages::Bufsize(buf_size));
-                                            gst::PadProbeReturn::Ok
-                                        },
-                                    );
-                                };
-                                source
-                            }
-                            None => {
-                                error!("Unable to create source element");
-                                ::std::process::exit(1);
-                            }
-                        },
-                    }
-                };
-
                 let server_ip = if server_ip == Ipv4Addr::new(0, 0, 0, 0) {
                     control_ip
                 } else {
@@ -497,12 +459,74 @@ impl actix::Handler<PlayerControl> for Player {
                     volume.set_property("mute", &!self.enable).unwrap();
                 }
 
-                let _ = source.set_state(gst::State::Ready);
-                source.set_property("location", &location).unwrap();
+                self.delete_source();
+
+                if self.pipeline.get_by_name("source").is_none() {
+                    let _ = self.pipeline.set_state(gst::State::Ready);
+                    match gst::ElementFactory::make("souphttpsrc", "source") {
+                        Some(source) => {
+                            info!("Creating new source");
+                            source
+                                .set_property("user-agent", &"Storm".to_owned())
+                                .unwrap();
+                            source.set_property("location", &location).unwrap();
+                            self.pipeline.add(&source).unwrap();
+                            if let Some(ibuf) = self.pipeline.get_by_name("ibuf") {
+                                source.link(&ibuf).unwrap();
+                            }
+                            let _ = source.sync_state_with_parent();
+                            if let Some(src_pad) = source.get_static_pad("src") {
+                                let proto = self.proto.clone();
+                                src_pad.add_probe(
+                                    gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+                                    move |_, probe_info| {
+                                        let buf_size = match probe_info.data {
+                                            Some(gst::PadProbeData::Buffer(ref buffer)) => {
+                                                buffer.get_size()
+                                            }
+                                            Some(gst::PadProbeData::BufferList(ref buflist)) => {
+                                                buflist.iter().map(|b| b.get_size()).sum()
+                                            }
+                                            _ => 0,
+                                        };
+                                        proto.do_send(PlayerMessages::Bufsize(buf_size));
+                                        gst::PadProbeReturn::Ok
+                                    },
+                                );
+                                let proto = self.proto.clone();
+                                src_pad.add_probe(
+                                    gst::PadProbeType::EVENT_BOTH,
+                                    move |_, probe_info| {
+                                        if let Some(ref probe_data) = probe_info.data {
+                                            if let gst::PadProbeData::Event(event) = probe_data {
+                                                if event.get_type() == gst::EventType::Eos {
+                                                    proto.do_send(PlayerMessages::Eos);
+                                                }
+                                            }
+                                        }
+                                        gst::PadProbeReturn::Ok
+                                    },
+                                );
+                            };
+                            let _ = source.sync_state_with_parent();
+                        }
+                        None => {
+                            error!("Unable to create source element");
+                            ::std::process::exit(1);
+                        }
+                    }
+                } else {
+                    // let source = self.pipeline.get_by_name("source").unwrap();
+                    // let _ = source.set_state(gst::State::Ready);
+                    // source.set_property("location", &location).unwrap();
+                    // let _ = source.sync_state_with_parent();
+                }
 
                 if self.pipeline.set_state(gst::State::Playing) == gst::StateChangeReturn::Failure {
                     error!("Unable to set the pipeline to the Playing state");
                 }
+
+                self.proto.do_send(PlayerMessages::Start);
             }
 
             PlayerControl::Stop => {
