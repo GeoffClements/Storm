@@ -139,7 +139,7 @@ impl Player {
             output_device: output_device,
             thread: None,
             proto: proto,
-            pipeline: gst::Pipeline::new("stormpipe"),
+            pipeline: gst::Pipeline::new(Some("stormpipe")),
         }
     }
 
@@ -150,24 +150,24 @@ impl Player {
 
         let mut elements = HashMap::new();
         elements.extend(vec![
-            ("ibuf", gst::ElementFactory::make("queue", "ibuf")),
-            ("decoder", gst::ElementFactory::make("decodebin", "decoder")),
+            ("ibuf", gst::ElementFactory::make("queue", Some("ibuf"))),
+            ("decoder", gst::ElementFactory::make("decodebin", Some("decoder"))),
             (
                 "converter",
-                gst::ElementFactory::make("audioconvert", "converter"),
+                gst::ElementFactory::make("audioconvert", Some("converter")),
             ),
             (
                 "resampler",
-                gst::ElementFactory::make("audioresample", "resampler"),
+                gst::ElementFactory::make("audioresample", Some("resampler")),
             ),
-            ("volume", gst::ElementFactory::make("volume", "volume")),
-            ("obuf", gst::ElementFactory::make("queue", "obuf")),
+            ("volume", gst::ElementFactory::make("volume", Some("volume"))),
+            ("obuf", gst::ElementFactory::make("queue", Some("obuf"))),
         ]);
 
         let sink = match self.output_device.service {
-            AudioService::Auto => gst::ElementFactory::make("autoaudiosink", "sink"),
-            AudioService::Alsa => gst::ElementFactory::make("alsasink", "sink"),
-            AudioService::Pulse => gst::ElementFactory::make("pulsesink", "sink"),
+            AudioService::Auto => gst::ElementFactory::make("autoaudiosink", Some("sink")),
+            AudioService::Alsa => gst::ElementFactory::make("alsasink", Some("sink")),
+            AudioService::Pulse => gst::ElementFactory::make("pulsesink", Some("sink")),
         };
 
         elements.insert("sink", sink);
@@ -360,7 +360,7 @@ impl Player {
         if let Some(source) = self.pipeline.get_by_name("source") {
             if let Some(ibuf) = self.pipeline.get_by_name("ibuf") {
                 source.unlink(&ibuf);
-                if source.set_state(gst::State::Null) != gst::StateChangeReturn::Failure {
+                if !source.set_state(gst::State::Null).is_err() {
                     info!("Destroying: {}", source.get_name());
                     let _ = self.pipeline.remove(&source);
                 }
@@ -463,7 +463,7 @@ impl actix::Handler<PlayerControl> for Player {
 
                 if self.pipeline.get_by_name("source").is_none() {
                     let _ = self.pipeline.set_state(gst::State::Ready);
-                    match gst::ElementFactory::make("souphttpsrc", "source") {
+                    match gst::ElementFactory::make("souphttpsrc", Some("source")) {
                         Some(source) => {
                             info!("Creating new source");
                             source
@@ -522,7 +522,7 @@ impl actix::Handler<PlayerControl> for Player {
                     // let _ = source.sync_state_with_parent();
                 }
 
-                if self.pipeline.set_state(gst::State::Playing) == gst::StateChangeReturn::Failure {
+                if !self.pipeline.set_state(gst::State::Playing).is_err() {
                     error!("Unable to set the pipeline to the Playing state");
                 }
 
@@ -530,7 +530,7 @@ impl actix::Handler<PlayerControl> for Player {
             }
 
             PlayerControl::Stop => {
-                if self.pipeline.set_state(gst::State::Ready) != gst::StateChangeReturn::Failure {
+                if !self.pipeline.set_state(gst::State::Ready).is_err() {
                     info!("Stopped stream");
                     self.proto.do_send(PlayerMessages::Flushed);
                     self.delete_source();
@@ -539,7 +539,7 @@ impl actix::Handler<PlayerControl> for Player {
 
             PlayerControl::Pause(quiet) => {
                 info!("Pausing stream");
-                if self.pipeline.set_state(gst::State::Paused) != gst::StateChangeReturn::Failure {
+                if !self.pipeline.set_state(gst::State::Paused).is_err() {
                     if !quiet {
                         self.proto.do_send(PlayerMessages::Paused);
                     }
@@ -548,7 +548,7 @@ impl actix::Handler<PlayerControl> for Player {
 
             PlayerControl::Unpause(quiet) => {
                 info!("Resuming stream");
-                if self.pipeline.set_state(gst::State::Playing) != gst::StateChangeReturn::Failure {
+                if !self.pipeline.set_state(gst::State::Playing).is_err() {
                     if !quiet {
                         self.proto.do_send(PlayerMessages::Unpaused);
                     }
@@ -587,8 +587,8 @@ impl actix::Handler<PlayerControl> for Player {
 fn query_pos(pipeline: &gst::Pipeline) -> u64 {
     let mut q = gst::Query::new_position(gst::Format::Time);
     if pipeline.query(&mut q) {
-        match q.get_result().try_into_time() {
-            Ok(pos) => pos.mseconds().unwrap_or(0),
+        match q.get_result() {
+            gst::GenericFormattedValue::Time(pos) => pos.mseconds().unwrap_or(0),
             _ => 0,
         }
     } else {

@@ -161,11 +161,12 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                     Arbiter::spawn(
                         tokio_timer::Delay::new(
                             Instant::now() + Duration::from_millis(millis as u64),
-                        ).and_then(move |_| {
+                        )
+                        .and_then(move |_| {
                             player_addr.do_send(player::PlayerControl::Unpause(true));
                             future::ok(())
                         })
-                            .map_err(|_| ()),
+                        .map_err(|_| ()),
                     )
                 }
             }
@@ -181,11 +182,12 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                         Arbiter::spawn(
                             tokio_timer::Delay::new(
                                 Instant::now() + Duration::from_millis(delay as u64),
-                            ).and_then(move |_| {
+                            )
+                            .and_then(move |_| {
                                 player_addr.do_send(player::PlayerControl::Unpause(true));
                                 future::ok(())
                             })
-                                .map_err(|_| ()),
+                            .map_err(|_| ()),
                         )
                     } else {
                         player_addr.do_send(player::PlayerControl::Unpause(true));
@@ -287,12 +289,12 @@ impl actix::Handler<player::PlayerMessages> for Proto {
                     self.autostart = true;
                 }
             } // player::PlayerMessages::Underrun => {
-            //     self.framed.write(self.stat_data.make_stat_message("STMu"));
-            // }
+              //     self.framed.write(self.stat_data.make_stat_message("STMu"));
+              // }
 
-            // player::PlayerMessages::Outputunderrun => {
-            //     self.framed.write(self.stat_data.make_stat_message("STMo"));
-            // }
+              // player::PlayerMessages::Outputunderrun => {
+              //     self.framed.write(self.stat_data.make_stat_message("STMo"));
+              // }
         }
     }
 }
@@ -310,11 +312,11 @@ pub fn run(
     name: &str,
     bufsize: u32,
     output_device: player::AudioDevice,
-) {
+) -> std::io::Result<()> {
     let sys = System::new("Storm");
     spawn_proto(server_ip, sync_group, name, bufsize, output_device);
     spawn_signal_handler();
-    sys.run();
+    sys.run()
 }
 
 fn spawn_proto(

@@ -80,7 +80,7 @@ fn main() {
                 .default_value("auto")
                 .value_delimiter("#")
                 .long_help(
-"The output device is specified using SERVICE[#DEVICE], e.g. alsa#hw:0,0.
+                    "The output device is specified using SERVICE[#DEVICE], e.g. alsa#hw:0,0.
 Allowed services are: \"auto\", \"alsa\" and \"pulse\".
 Selecting \"auto\" will let Storm choose the best device.
 For \"alsa\" and \"pulse\" the device is specified as usual for those services,
@@ -131,11 +131,18 @@ If no device is specified the default for that service is used.",
         opts.value_of("buffersize").unwrap().parse::<u32>().unwrap()
     );
 
-    proto::run(
+    match proto::run(
         server_addr,
         None,
         opts.value_of("name").unwrap(),
         opts.value_of("buffersize").unwrap().parse::<u32>().unwrap() * 1024,
-        player::AudioDevice::from(opts.values_of("output-device").unwrap().collect::<Vec<&str>>()),
-    );
+        player::AudioDevice::from(
+            opts.values_of("output-device")
+                .unwrap()
+                .collect::<Vec<&str>>(),
+        ),
+    ) {
+        Ok(_) => info!("Storm terminated normally"),
+        e @ _ => error!("Storm error {:?}", e),
+    };
 }
