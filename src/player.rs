@@ -124,6 +124,7 @@ pub struct Player {
     thread: Option<thread_control::Control>,
     pub proto: actix::Addr<proto::Proto>,
     pipeline: gst::Pipeline,
+    streams: Vec<gst::Bin>,
 }
 
 impl Player {
@@ -140,136 +141,115 @@ impl Player {
             thread: None,
             proto: proto,
             pipeline: gst::Pipeline::new(Some("stormpipe")),
+            streams: Vec::with_capacity(2),
         }
     }
 
-    fn fill_pipeline(&mut self) {
+    fn delete_source(&mut self) {
+        if let Some(source) = self.pipeline.get_by_name("source") {
+            if let Some(ibuf) = self.pipeline.get_by_name("ibuf") {
+                source.unlink(&ibuf);
+                if !source.set_state(gst::State::Null).is_err() {
+                    info!("Destroying: {}", source.get_name());
+                    let _ = self.pipeline.remove(&source);
+                }
+            }
+        }
+    }
+}
+
+impl actix::Actor for Player {
+    type Context = actix::Context<Self>;
+
+    fn started(&mut self, _ctx: &mut actix::Context<Self>) {
         if self.pipeline.get_by_name("sink").is_some() {
             return;
         }
 
-        let mut elements = HashMap::new();
-        elements.extend(vec![
-            ("ibuf", gst::ElementFactory::make("queue", Some("ibuf"))),
-            ("decoder", gst::ElementFactory::make("decodebin", Some("decoder"))),
-            (
-                "converter",
-                gst::ElementFactory::make("audioconvert", Some("converter")),
-            ),
-            (
-                "resampler",
-                gst::ElementFactory::make("audioresample", Some("resampler")),
-            ),
-            ("volume", gst::ElementFactory::make("volume", Some("volume"))),
-            ("obuf", gst::ElementFactory::make("queue", Some("obuf"))),
-        ]);
+        // Audio Sink
+        let sink = {
+            match self.output_device.service {
+                AudioService::Auto => gst::ElementFactory::make("autoaudiosink", Some("sink")),
+                AudioService::Alsa => gst::ElementFactory::make("alsasink", Some("sink")),
+                AudioService::Pulse => gst::ElementFactory::make("pulsesink", Some("sink")),
+            }
+        }
+        .unwrap();
 
-        let sink = match self.output_device.service {
-            AudioService::Auto => gst::ElementFactory::make("autoaudiosink", Some("sink")),
-            AudioService::Alsa => gst::ElementFactory::make("alsasink", Some("sink")),
-            AudioService::Pulse => gst::ElementFactory::make("pulsesink", Some("sink")),
+        if let Some(ref device) = self.output_device.device {
+            sink.set_property("device", &device).unwrap();
         };
 
-        elements.insert("sink", sink);
-
-        if elements.values().any(|e| e.is_none()) {
-            error!("Unable to instantiate stream elements");
-            return;
-        }
-
-        // From this point on element unwraps are safe
-
-        let elements: HashMap<&str, gst::Element> =
-            elements.into_iter().map(|(k, v)| (k, v.unwrap())).collect();
-
-        for element in elements.values() {
-            if let Err(_) = self.pipeline.add(element) {
-                error!("Error adding elements to pipeline");
-                return;
-            }
-        }
-
-        for elems in ["ibuf", "decoder"].windows(2) {
-            if let Err(_) = elements
-                .get(elems[0])
-                .unwrap()
-                .link(elements.get(elems[1]).unwrap())
-            {
-                error!("Cannot link elements");
-                return;
-            }
-        }
-
-        for elems in ["converter", "resampler", "volume", "obuf", "sink"].windows(2) {
-            if let Err(_) = elements
-                .get(elems[0])
-                .unwrap()
-                .link(elements.get(elems[1]).unwrap())
-            {
-                error!("Cannot link elements");
-                return;
-            }
-        }
-
-        if let Some(ibuf) = elements.get("ibuf") {
-            let proto = self.proto.clone();
-            ibuf.connect("overrun", true, move |_| {
-                proto.do_send(PlayerMessages::Overrun);
-                None
-            }).unwrap();
-            // ibuf.connect("underrun", true, move |_| {
-            //     proto.do_send(PlayerMessages::Underrun);
-            //     None
-            // }).unwrap();
-        }
-
-        let decoder = elements.get("decoder").unwrap();
-        let converter_weak = elements.get("converter").unwrap().downgrade();
-        decoder.connect_pad_added(move |_, src_pad| {
-            let converter = match converter_weak.upgrade() {
-                Some(converter) => converter,
-                None => return,
-            };
-
-            let sink_pad = converter
-                .get_static_pad("sink")
-                .expect("Failed to get static sink pad from convert");
-            if sink_pad.is_linked() {
-                info!("We are already linked. Ignoring.");
-                return;
-            }
-
-            let new_pad_caps = src_pad
-                .get_current_caps()
-                .expect("Failed to get caps of new pad.");
-            let new_pad_struct = new_pad_caps
-                .get_structure(0)
-                .expect("Failed to get first structure of caps.");
-            let new_pad_type = new_pad_struct.get_name();
-
-            if new_pad_type.starts_with("audio/x-raw") {
-                info!("Linking decoder to converter");
-                let _ = src_pad.link(&sink_pad);
-            }
-        });
-
-        if let Some(sink) = elements.get("sink") {
+        {
             let service = match self.output_device.service {
                 AudioService::Alsa => "ALSA",
                 AudioService::Pulse => "PULSEAUDIO",
                 _ => "AUTO",
             };
-            if let Some(ref device) = self.output_device.device {
-                sink.set_property("device", &device).unwrap();
-            }
             let device = if let Ok(prop) = sink.get_property("device-name") {
                 prop.get().unwrap_or("default".to_owned())
             } else {
                 "default".to_owned()
             };
+
             info!("Using audio service: {} with device: {}", service, device);
         }
 
+        if self.pipeline.add(&sink).is_err() {
+            return;
+        };
+
+        // Audio Resample
+        let resampler = gst::ElementFactory::make("audioresample", Some("resampler")).unwrap();
+        if self.pipeline.add(&resampler).is_err() {
+            return;
+        };
+
+        if resampler.link(&sink).is_err() {
+            return;
+        };
+
+        // Audio Converter
+        let converter = gst::ElementFactory::make("audioconvert", Some("converter")).unwrap();
+        if self.pipeline.add(&converter).is_err() {
+            return;
+        };
+
+        if converter.link(&resampler).is_err() {
+            return;
+        };
+
+        // Volume
+        let volume = gst::ElementFactory::make("volume", Some("volume")).unwrap();
+        if self.pipeline.add(&volume).is_err() {
+            return;
+        };
+
+        if volume.link(&converter).is_err() {
+            return;
+        };
+
+        // Output Buffer
+        let obuf = gst::ElementFactory::make("queue", Some("obuf")).unwrap();
+        if self.pipeline.add(&obuf).is_err() {
+            return;
+        };
+
+        if obuf.link(&volume).is_err() {
+            return;
+        };
+
+        // Concat
+        let concat = gst::ElementFactory::make("concat", Some("concat")).unwrap();
+        if self.pipeline.add(&concat).is_err() {
+            return;
+        };
+
+        if concat.link(&obuf).is_err() {
+            return;
+        };
+
+        //Set up periodic message
         let proto = self.proto.clone();
         let (flag, control) = thread_control::make_pair();
         self.thread = Some(control);
@@ -306,36 +286,34 @@ impl Player {
                         //     info!("End of stream detected");
                         //     proto.do_send(PlayerMessages::Eos);
                         // }
+                        // MessageView::Element(element) => {
+                        //     if let Some(source) = element.get_src() {
+                        //         if source.get_name() == "source" {
+                        //             if let Some(structure) = element.get_structure() {
+                        //                 if structure.get_name() == "http-headers" {
+                        //                     proto.do_send(PlayerMessages::Established);
+                        //                     let crlf = structure.iter().count() as u8;
+                        //                     proto.do_send(PlayerMessages::Headers(crlf));
+                        //                 }
+                        //             }
+                        //         }
+                        //     }
+                        // }
 
-                        MessageView::Element(element) => {
-                            if let Some(source) = element.get_src() {
-                                if source.get_name() == "source" {
-                                    if let Some(structure) = element.get_structure() {
-                                        if structure.get_name() == "http-headers" {
-                                            proto.do_send(PlayerMessages::Established);
-                                            let crlf = structure.iter().count() as u8;
-                                            proto.do_send(PlayerMessages::Headers(crlf));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        MessageView::StateChanged(state) => {
-                            if let Some(source) = state.get_src() {
-                                if source.get_name() == "stormpipe" {
-                                    if state.get_current() == gst::State::Null {
-                                        info!("Pipeline moved to null state");
-                                    }
-                                }
-                            }
-                        }
+                        // MessageView::StateChanged(state) => {
+                        //     if let Some(source) = state.get_src() {
+                        //         if source.get_name() == "stormpipe" {
+                        //             if state.get_current() == gst::State::Null {
+                        //                 info!("Pipeline moved to null state");
+                        //             }
+                        //         }
+                        //     }
+                        // }
 
                         // MessageView::StreamStart(..) => {
                         //     info!("Stream is starting");
                         //     proto.do_send(PlayerMessages::Start);
                         // }
-
                         MessageView::Latency(..) => {
                             info!("Recalculating latency");
                             let _ = pipeline.recalculate_latency();
@@ -354,23 +332,37 @@ impl Player {
                 }
             }
         });
-    }
 
-    fn delete_source(&mut self) {
-        if let Some(source) = self.pipeline.get_by_name("source") {
-            if let Some(ibuf) = self.pipeline.get_by_name("ibuf") {
-                source.unlink(&ibuf);
-                if !source.set_state(gst::State::Null).is_err() {
-                    info!("Destroying: {}", source.get_name());
-                    let _ = self.pipeline.remove(&source);
-                }
-            }
-        }
-    }
-}
+        //         let decoder = elements.get("decoder").unwrap();
+        //         let converter_weak = elements.get("converter").unwrap().downgrade();
+        //         decoder.connect_pad_added(move |_, src_pad| {
+        //             let converter = match converter_weak.upgrade() {
+        //                 Some(converter) => converter,
+        //                 None => return,
+        //             };
 
-impl actix::Actor for Player {
-    type Context = actix::Context<Self>;
+        //             let sink_pad = converter
+        //                 .get_static_pad("sink")
+        //                 .expect("Failed to get static sink pad from convert");
+        //             if sink_pad.is_linked() {
+        //                 info!("We are already linked. Ignoring.");
+        //                 return;
+        //             }
+
+        //             let new_pad_caps = src_pad
+        //                 .get_current_caps()
+        //                 .expect("Failed to get caps of new pad.");
+        //             let new_pad_struct = new_pad_caps
+        //                 .get_structure(0)
+        //                 .expect("Failed to get first structure of caps.");
+        //             let new_pad_type = new_pad_struct.get_name();
+
+        //             if new_pad_type.starts_with("audio/x-raw") {
+        //                 info!("Linking decoder to converter");
+        //                 let _ = src_pad.link(&sink_pad);
+        //             }
+        //         });
+    }
 }
 
 impl actix::Handler<PlayerControl> for Player {
@@ -384,11 +376,7 @@ impl actix::Handler<PlayerControl> for Player {
                 } else {
                     gain_right
                 };
-                self.gain = if self.gain > 1.0 {
-                    1.0
-                } else {
-                    self.gain
-                };
+                self.gain = if self.gain > 1.0 { 1.0 } else { self.gain };
                 info!("Setting gain to {}", self.gain);
                 if let Some(volume) = self.pipeline.get_by_name("volume") {
                     volume.set_property("volume", &self.gain).unwrap();
@@ -418,7 +406,7 @@ impl actix::Handler<PlayerControl> for Player {
                 // if self.pipeline.set_state(gst::State::Ready) == gst::StateChangeReturn::Failure {
                 //     error!("Unable to set the pipeline to the Playing state");
                 // }
-                self.fill_pipeline();
+                //self.fill_pipeline();
 
                 let server_ip = if server_ip == Ipv4Addr::new(0, 0, 0, 0) {
                     control_ip
@@ -439,13 +427,52 @@ impl actix::Handler<PlayerControl> for Player {
                 let location = format!("http://{}:{}{}", server_ip, server_port, get);
                 info!("{}", location);
 
-                if let Some(ibuf) = self.pipeline.get_by_name("ibuf") {
-                    ibuf.set_property("max-size-bytes", &(&threshold * 32))
-                        .unwrap();
+                // Create stream decode elements
+                let stream = gst::Bin::new(None);
+                // let binsrcpad = gst::GhostPad::new_no_target(None, gst::PadDirection::Src);
+
+                let decoder = gst::ElementFactory::make("decodebin", None).unwrap();
+                if stream.add(&decoder).is_err() {
+                    return;
                 };
 
+                let concat_weak = self.pipeline.get_by_name("concat").unwrap().downgrade();
+                decoder.connect_pad_added(move |_, src_pad| {
+                    let concat = match concat_weak.upgrade() {
+                        Some(concat) => concat,
+                        None => return,
+                    };
+
+                    if let Some(sink_pad) = concat.get_compatible_pad(src_pad, None) {
+                        let _ = src_pad.link(&sink_pad);
+                    }
+                });
+
+                let ibuf = gst::ElementFactory::make("queue", None).unwrap();
+                ibuf.set_property("max-size-bytes", &(&threshold)).unwrap();
+                if stream.add(&ibuf).is_ok() {
+                    if ibuf.link(&decoder).is_err() {
+                        return;
+                    }
+                } else {
+                    return;
+                };
+
+                let source = gst::ElementFactory::make("souphttpsrc", None).unwrap();
+                source
+                    .set_property("user-agent", &"Storm".to_owned())
+                    .unwrap();
+                source.set_property("location", &location).unwrap();
+                if stream.add(&source).is_ok() {
+                    if source.link(&ibuf).is_err() {
+                        return;
+                    }
+                } else {
+                    return;
+                }
+
                 if let Some(obuf) = self.pipeline.get_by_name("obuf") {
-                    obuf.set_property("max-size-time", &(&output_threshold * 1))
+                    obuf.set_property("max-size-time", &(&output_threshold))
                         .unwrap();
                 };
 
@@ -459,72 +486,113 @@ impl actix::Handler<PlayerControl> for Player {
                     volume.set_property("mute", &!self.enable).unwrap();
                 }
 
-                self.delete_source();
-
-                if self.pipeline.get_by_name("source").is_none() {
-                    let _ = self.pipeline.set_state(gst::State::Ready);
-                    match gst::ElementFactory::make("souphttpsrc", Some("source")) {
-                        Some(source) => {
-                            info!("Creating new source");
-                            source
-                                .set_property("user-agent", &"Storm".to_owned())
-                                .unwrap();
-                            source.set_property("location", &location).unwrap();
-                            self.pipeline.add(&source).unwrap();
-                            if let Some(ibuf) = self.pipeline.get_by_name("ibuf") {
-                                source.link(&ibuf).unwrap();
-                            }
-                            let _ = source.sync_state_with_parent();
-                            if let Some(src_pad) = source.get_static_pad("src") {
-                                let proto = self.proto.clone();
-                                src_pad.add_probe(
-                                    gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
-                                    move |_, probe_info| {
-                                        let buf_size = match probe_info.data {
-                                            Some(gst::PadProbeData::Buffer(ref buffer)) => {
-                                                buffer.get_size()
-                                            }
-                                            Some(gst::PadProbeData::BufferList(ref buflist)) => {
-                                                buflist.iter().map(|b| b.get_size()).sum()
-                                            }
-                                            _ => 0,
-                                        };
-                                        proto.do_send(PlayerMessages::Bufsize(buf_size));
-                                        gst::PadProbeReturn::Ok
-                                    },
-                                );
-                                let proto = self.proto.clone();
-                                src_pad.add_probe(
-                                    gst::PadProbeType::EVENT_BOTH,
-                                    move |_, probe_info| {
-                                        if let Some(ref probe_data) = probe_info.data {
-                                            if let gst::PadProbeData::Event(event) = probe_data {
-                                                if event.get_type() == gst::EventType::Eos {
-                                                    proto.do_send(PlayerMessages::Eos);
-                                                }
-                                            }
-                                        }
-                                        gst::PadProbeReturn::Ok
-                                    },
-                                );
+                if let Some(src_pad) = source.get_static_pad("src") {
+                    let proto = self.proto.clone();
+                    src_pad.add_probe(
+                        gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+                        move |_, probe_info| {
+                            let buf_size = match probe_info.data {
+                                Some(gst::PadProbeData::Buffer(ref buffer)) => buffer.get_size(),
+                                Some(gst::PadProbeData::BufferList(ref buflist)) => {
+                                    buflist.iter().map(|b| b.get_size()).sum()
+                                }
+                                _ => 0,
                             };
-                            let _ = source.sync_state_with_parent();
+                            proto.do_send(PlayerMessages::Bufsize(buf_size));
+                            gst::PadProbeReturn::Ok
+                        },
+                    );
+
+                    let proto = self.proto.clone();
+                    src_pad.add_probe(gst::PadProbeType::EVENT_BOTH, move |_, probe_info| {
+                        if let Some(ref probe_data) = probe_info.data {
+                            if let gst::PadProbeData::Event(event) = probe_data {
+                                if event.get_type() == gst::EventType::Eos {
+                                    proto.do_send(PlayerMessages::Eos);
+                                }
+                            }
                         }
-                        None => {
-                            error!("Unable to create source element");
-                            ::std::process::exit(1);
-                        }
-                    }
-                } else {
-                    // let source = self.pipeline.get_by_name("source").unwrap();
-                    // let _ = source.set_state(gst::State::Ready);
-                    // source.set_property("location", &location).unwrap();
-                    // let _ = source.sync_state_with_parent();
+                        gst::PadProbeReturn::Ok
+                    });
                 }
 
-                if !self.pipeline.set_state(gst::State::Playing).is_err() {
-                    error!("Unable to set the pipeline to the Playing state");
-                }
+                let _ = self.pipeline.add(&stream);
+                let _ = stream.sync_state_with_parent();
+
+// FIXME: Fix this logic
+                if self.streams.len() > 1 {
+                    self.streams.swap(0, 1);
+                };
+
+                self.streams[0] = stream;
+// FIXME: unlink the old stream
+
+                // if self.pipeline.get_by_name("source").is_none() {
+                //     let _ = self.pipeline.set_state(gst::State::Ready);
+                //     match gst::ElementFactory::make("souphttpsrc", Some("source")) {
+                //         Some(source) => {
+                //             info!("Creating new source");
+                //             source
+                //                 .set_property("user-agent", &"Storm".to_owned())
+                //                 .unwrap();
+                //             source.set_property("location", &location).unwrap();
+                //             self.pipeline.add(&source).unwrap();
+                //             if let Some(ibuf) = self.pipeline.get_by_name("ibuf") {
+                //                 source.link(&ibuf).unwrap();
+                //             }
+                //             let _ = source.sync_state_with_parent();
+                //             if let Some(src_pad) = source.get_static_pad("src") {
+                //                 let proto = self.proto.clone();
+                //                 src_pad.add_probe(
+                //                     gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+                //                     move |_, probe_info| {
+                //                         let buf_size = match probe_info.data {
+                //                             Some(gst::PadProbeData::Buffer(ref buffer)) => {
+                //                                 buffer.get_size()
+                //                             }
+                //                             Some(gst::PadProbeData::BufferList(ref buflist)) => {
+                //                                 buflist.iter().map(|b| b.get_size()).sum()
+                //                             }
+                //                             _ => 0,
+                //                         };
+                //                         proto.do_send(PlayerMessages::Bufsize(buf_size));
+                //                         gst::PadProbeReturn::Ok
+                //                     },
+                //                 );
+                //                 let proto = self.proto.clone();
+                //                 src_pad.add_probe(
+                //                     gst::PadProbeType::EVENT_BOTH,
+                //                     move |_, probe_info| {
+                //                         if let Some(ref probe_data) = probe_info.data {
+                //                             if let gst::PadProbeData::Event(event) = probe_data {
+                //                                 if event.get_type() == gst::EventType::Eos {
+                //                                     proto.do_send(PlayerMessages::Eos);
+                //                                 }
+                //                             }
+                //                         }
+                //                         gst::PadProbeReturn::Ok
+                //                     },
+                //                 );
+                //             };
+                //             let _ = source.sync_state_with_parent();
+                //         }
+                //         None => {
+                //             error!("Unable to create source element");
+                //             ::std::process::exit(1);
+                //         }
+                //     }
+                // } else {
+                //     // let source = self.pipeline.get_by_name("source").unwrap();
+                //     // let _ = source.set_state(gst::State::Ready);
+                //     // source.set_property("location", &location).unwrap();
+                //     // let _ = source.sync_state_with_parent();
+                // }
+
+                // if !self.pipeline.set_state(gst::State::Playing).is_err() {
+                //     error!("Unable to set the pipeline to the Playing state");
+                // }
+
+                // FIXME: check autostart
 
                 self.proto.do_send(PlayerMessages::Start);
             }
@@ -533,7 +601,6 @@ impl actix::Handler<PlayerControl> for Player {
                 if !self.pipeline.set_state(gst::State::Ready).is_err() {
                     info!("Stopped stream");
                     self.proto.do_send(PlayerMessages::Flushed);
-                    self.delete_source();
                 }
             }
 
@@ -573,7 +640,8 @@ impl actix::Handler<PlayerControl> for Player {
                     gst::ClockTime::from_mseconds(newpos),
                     gst::SeekType::None,
                     gst::ClockTime::none(),
-                ).build();
+                )
+                .build();
                 self.pipeline.send_event(seek);
             } // PlayerControl::Deletesource => {
               //     if self.sources.len() > 1 {
