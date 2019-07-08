@@ -431,7 +431,7 @@ impl actix::Handler<PlayerControl> for Player {
                 let stream = gst::Bin::new(None);
                 // let binsrcpad = gst::GhostPad::new_no_target(None, gst::PadDirection::Src);
 
-                let decoder = gst::ElementFactory::make("decodebin", None).unwrap();
+                let decoder = gst::ElementFactory::make("decodebin", Some("decoder")).unwrap();
                 if stream.add(&decoder).is_err() {
                     return;
                 };
@@ -448,6 +448,7 @@ impl actix::Handler<PlayerControl> for Player {
                     }
                 });
 
+                // TODO: Override buffer size with command line option
                 let ibuf = gst::ElementFactory::make("queue", None).unwrap();
                 ibuf.set_property("max-size-bytes", &(&threshold)).unwrap();
                 if stream.add(&ibuf).is_ok() {
@@ -459,10 +460,6 @@ impl actix::Handler<PlayerControl> for Player {
                 };
 
                 let source = gst::ElementFactory::make("souphttpsrc", None).unwrap();
-                source
-                    .set_property("user-agent", &"Storm".to_owned())
-                    .unwrap();
-                source.set_property("location", &location).unwrap();
                 if stream.add(&source).is_ok() {
                     if source.link(&ibuf).is_err() {
                         return;
@@ -470,6 +467,10 @@ impl actix::Handler<PlayerControl> for Player {
                 } else {
                     return;
                 }
+                source
+                    .set_property("user-agent", &"Storm".to_owned())
+                    .unwrap();
+                source.set_property("location", &location).unwrap();
 
                 if let Some(obuf) = self.pipeline.get_by_name("obuf") {
                     obuf.set_property("max-size-time", &(&output_threshold))
@@ -519,13 +520,19 @@ impl actix::Handler<PlayerControl> for Player {
                 let _ = self.pipeline.add(&stream);
                 let _ = stream.sync_state_with_parent();
 
-// FIXME: Fix this logic
                 if self.streams.len() > 1 {
-                    self.streams.swap(0, 1);
+                    if let Some(old_stream) = self.streams.pop() {
+                        let _ = self.pipeline.remove(&old_stream);
+                        if let Some(pad) = self.pipeline.find_unlinked_pad(gst::PadDirection::Sink)
+                        {
+                            if let Some(concat) = self.pipeline.get_by_name("concat") {
+                                concat.release_request_pad(&pad)
+                            }
+                        }
+                    }
                 };
 
-                self.streams[0] = stream;
-// FIXME: unlink the old stream
+                self.streams.insert(0, stream);
 
                 // if self.pipeline.get_by_name("source").is_none() {
                 //     let _ = self.pipeline.set_state(gst::State::Ready);
@@ -592,9 +599,11 @@ impl actix::Handler<PlayerControl> for Player {
                 //     error!("Unable to set the pipeline to the Playing state");
                 // }
 
-                // FIXME: check autostart
-
-                self.proto.do_send(PlayerMessages::Start);
+                if autostart {
+                    if self.pipeline.set_state(gst::State::Playing).is_ok() {
+                        self.proto.do_send(PlayerMessages::Start);
+                    }
+                }
             }
 
             PlayerControl::Stop => {
