@@ -255,6 +255,7 @@ impl actix::Actor for Player {
         self.thread = Some(control);
         let bus = self.pipeline.get_bus().unwrap();
         let pipeline_weak = self.pipeline.downgrade();
+        let streams = self.streams.clone(); //Won't work
         ::std::thread::spawn(move || {
             let pipeline = match pipeline_weak.upgrade() {
                 Some(pipeline) => pipeline,
@@ -437,19 +438,27 @@ impl actix::Handler<PlayerControl> for Player {
                 };
 
                 let concat_weak = self.pipeline.get_by_name("concat").unwrap().downgrade();
+                let stream_weak = stream.downgrade();
                 decoder.connect_pad_added(move |_, src_pad| {
                     let concat = match concat_weak.upgrade() {
                         Some(concat) => concat,
                         None => return,
                     };
 
+                    let stream = stream_weak.upgrade().unwrap();
+
                     if let Some(sink_pad) = concat.get_compatible_pad(src_pad, None) {
-                        let _ = src_pad.link(&sink_pad);
+                        let g_pad = gst::GhostPad::new(None, src_pad).unwrap();
+                        let _ = g_pad.set_active(true);
+                        if stream.add_pad(&g_pad).is_ok() {
+                            let _ = g_pad.link(&sink_pad);
+                        }
                     }
                 });
 
+
                 // TODO: Override buffer size with command line option
-                let ibuf = gst::ElementFactory::make("queue", None).unwrap();
+                let ibuf = gst::ElementFactory::make("queue", Some("ibuf")).unwrap();
                 ibuf.set_property("max-size-bytes", &(&threshold)).unwrap();
                 if stream.add(&ibuf).is_ok() {
                     if ibuf.link(&decoder).is_err() {
@@ -522,11 +531,15 @@ impl actix::Handler<PlayerControl> for Player {
 
                 if self.streams.len() > 1 {
                     if let Some(old_stream) = self.streams.pop() {
-                        let _ = self.pipeline.remove(&old_stream);
-                        if let Some(pad) = self.pipeline.find_unlinked_pad(gst::PadDirection::Sink)
-                        {
-                            if let Some(concat) = self.pipeline.get_by_name("concat") {
-                                concat.release_request_pad(&pad)
+                        if old_stream.set_state(gst::State::Null).is_ok() {
+                            let _ = self.pipeline.remove(&old_stream);
+                            if let Some(pad) =
+                                self.pipeline.find_unlinked_pad(gst::PadDirection::Sink)
+                            {
+                                if pad.get_parent().unwrap().get_name().as_str() == "concat" {
+                                    let concat = self.pipeline.get_by_name("concat").unwrap();
+                                    concat.release_request_pad(&pad)
+                                }
                             }
                         }
                     }
