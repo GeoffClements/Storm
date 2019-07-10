@@ -286,19 +286,19 @@ impl actix::Actor for Player {
                         //     info!("End of stream detected");
                         //     proto.do_send(PlayerMessages::Eos);
                         // }
-                        // MessageView::Element(element) => {
-                        //     if let Some(source) = element.get_src() {
-                        //         if source.get_name() == "source" {
-                        //             if let Some(structure) = element.get_structure() {
-                        //                 if structure.get_name() == "http-headers" {
-                        //                     proto.do_send(PlayerMessages::Established);
-                        //                     let crlf = structure.iter().count() as u8;
-                        //                     proto.do_send(PlayerMessages::Headers(crlf));
-                        //                 }
-                        //             }
-                        //         }
-                        //     }
-                        // }
+                        MessageView::Element(element) => {
+                            if let Some(source) = element.get_src() {
+                                if source.get_name() == "source" {
+                                    if let Some(structure) = element.get_structure() {
+                                        if structure.get_name() == "http-headers" {
+                                            proto.do_send(PlayerMessages::Established);
+                                            let crlf = structure.iter().count() as u8;
+                                            proto.do_send(PlayerMessages::Headers(crlf));
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
                         // MessageView::StateChanged(state) => {
                         //     if let Some(source) = state.get_src() {
@@ -323,10 +323,10 @@ impl actix::Actor for Player {
                     },
 
                     None => {
-                        let (ibuf_fullnes, obuf_fullness) = buffer_fullness(&pipeline);
+                        let (ibuf_fullness, obuf_fullness) = buffer_fullness(&pipeline);
                         proto.do_send(PlayerMessages::Streamdata {
                             position: query_pos(&pipeline),
-                            fullness: ibuf_fullnes,
+                            fullness: ibuf_fullness,
                             output_buffer_fullness: obuf_fullness,
                         });
                     }
@@ -467,7 +467,7 @@ impl actix::Handler<PlayerControl> for Player {
                     return;
                 };
 
-                let source = gst::ElementFactory::make("souphttpsrc", None).unwrap();
+                let source = gst::ElementFactory::make("souphttpsrc", Some("source")).unwrap();
                 if stream.add(&source).is_ok() {
                     if source.link(&ibuf).is_err() {
                         return;
@@ -613,6 +613,7 @@ impl actix::Handler<PlayerControl> for Player {
 
                 if autostart {
                     if self.pipeline.set_state(gst::State::Playing).is_ok() {
+                        info!("Autostarting track");
                         self.proto.do_send(PlayerMessages::Start);
                     }
                 }
@@ -688,20 +689,20 @@ fn query_pos(pipeline: &gst::Pipeline) -> u64 {
 fn buffer_fullness(pipeline: &gst::Pipeline) -> (u32, u32) {
     pipeline
         .iterate_recurse()
-        .fold((0, 0), |fullneses, element| {
+        .fold((0, 0), |fullnesses, element| {
             match element.get_name().as_str() {
                 "ibuf" => {
-                    let ibuf_fullness = match element.get_property("current-level-bytes") {
+                    let ibuf_fullnesss = match element.get_property("current-level-bytes") {
                         Ok(bytes) => bytes.get().unwrap_or(0),
                         _ => 0,
                     };
                     Ok((
-                        if ibuf_fullness > fullneses.0 {
-                            ibuf_fullness
+                        if ibuf_fullnesss > fullnesses.0 {
+                            ibuf_fullnesss
                         } else {
-                            fullneses.0
+                            fullnesses.0
                         },
-                        fullneses.1,
+                        fullnesses.1,
                     ))
                 }
                 "obuf" => {
@@ -709,9 +710,9 @@ fn buffer_fullness(pipeline: &gst::Pipeline) -> (u32, u32) {
                         Ok(bytes) => bytes.get().unwrap_or(0),
                         _ => 0,
                     };
-                    Ok((fullneses.0, obuf_fullness))
+                    Ok((fullnesses.0, obuf_fullness))
                 }
-                _ => Ok(fullneses),
+                _ => Ok(fullnesses),
             }
         })
         .unwrap_or((0, 0))
