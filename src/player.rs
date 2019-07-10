@@ -255,7 +255,6 @@ impl actix::Actor for Player {
         self.thread = Some(control);
         let bus = self.pipeline.get_bus().unwrap();
         let pipeline_weak = self.pipeline.downgrade();
-        let streams = self.streams.clone(); //Won't work
         ::std::thread::spawn(move || {
             let pipeline = match pipeline_weak.upgrade() {
                 Some(pipeline) => pipeline,
@@ -324,10 +323,11 @@ impl actix::Actor for Player {
                     },
 
                     None => {
+                        let (ibuf_fullnes, obuf_fullness) = buffer_fullness(&pipeline);
                         proto.do_send(PlayerMessages::Streamdata {
                             position: query_pos(&pipeline),
-                            fullness: buffer_fullness(&pipeline, "ibuf"),
-                            output_buffer_fullness: buffer_fullness(&pipeline, "obuf"),
+                            fullness: ibuf_fullnes,
+                            output_buffer_fullness: obuf_fullness,
                         });
                     }
                 }
@@ -455,7 +455,6 @@ impl actix::Handler<PlayerControl> for Player {
                         }
                     }
                 });
-
 
                 // TODO: Override buffer size with command line option
                 let ibuf = gst::ElementFactory::make("queue", Some("ibuf")).unwrap();
@@ -686,12 +685,34 @@ fn query_pos(pipeline: &gst::Pipeline) -> u64 {
     }
 }
 
-fn buffer_fullness(pipeline: &gst::Pipeline, buffer: &str) -> u32 {
-    match pipeline.get_by_name(buffer) {
-        Some(buf) => match buf.get_property("current-level-bytes") {
-            Ok(bytes) => bytes.get().unwrap_or(0),
-            _ => 0,
-        },
-        _ => 0,
-    }
+fn buffer_fullness(pipeline: &gst::Pipeline) -> (u32, u32) {
+    pipeline
+        .iterate_recurse()
+        .fold((0, 0), |fullneses, element| {
+            match element.get_name().as_str() {
+                "ibuf" => {
+                    let ibuf_fullness = match element.get_property("current-level-bytes") {
+                        Ok(bytes) => bytes.get().unwrap_or(0),
+                        _ => 0,
+                    };
+                    Ok((
+                        if ibuf_fullness > fullneses.0 {
+                            ibuf_fullness
+                        } else {
+                            fullneses.0
+                        },
+                        fullneses.1,
+                    ))
+                }
+                "obuf" => {
+                    let obuf_fullness = match element.get_property("current-level-bytes") {
+                        Ok(bytes) => bytes.get().unwrap_or(0),
+                        _ => 0,
+                    };
+                    Ok((fullneses.0, obuf_fullness))
+                }
+                _ => Ok(fullneses),
+            }
+        })
+        .unwrap_or((0, 0))
 }
