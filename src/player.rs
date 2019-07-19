@@ -125,6 +125,7 @@ pub struct Player {
     pub proto: actix::Addr<proto::Proto>,
     pipeline: gst::Pipeline,
     streams: Vec<gst::Bin>,
+    data_probe: Option<gst::PadProbeId>,
 }
 
 impl Player {
@@ -142,6 +143,7 @@ impl Player {
             proto: proto,
             pipeline: gst::Pipeline::new(Some("stormpipe")),
             streams: Vec::with_capacity(2),
+            data_probe: None,
         }
     }
 
@@ -241,6 +243,20 @@ impl actix::Actor for Player {
 
         // Concat
         let concat = gst::ElementFactory::make("concat", Some("concat")).unwrap();
+        let concat_src = concat.get_static_pad("src").unwrap();
+        let proto = self.proto.clone();
+        concat_src.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_, probe_info| {
+            if let Some(ref probe_data) = probe_info.data {
+                if let gst::PadProbeData::Event(event) = probe_data {
+                    if event.get_type() == gst::EventType::StreamStart {
+                        info!("Stream start on concat src pad");
+                        proto.do_send(PlayerMessages::Start)
+                    }
+                }
+            }
+            gst::PadProbeReturn::Ok
+        });
+
         if self.pipeline.add(&concat).is_err() {
             return;
         };
@@ -299,6 +315,22 @@ impl actix::Actor for Player {
                                 }
                             }
                         }
+
+                        // if self.streams.len() > 1 {
+                        //     if let Some(old_stream) = self.streams.pop() {
+                        //         if old_stream.set_state(gst::State::Null).is_ok() {
+                        //             let _ = self.pipeline.remove(&old_stream);
+                        //             if let Some(pad) =
+                        //                 self.pipeline.find_unlinked_pad(gst::PadDirection::Sink)
+                        //             {
+                        //                 if pad.get_parent().unwrap().get_name().as_str() == "concat" {
+                        //                     let concat = self.pipeline.get_by_name("concat").unwrap();
+                        //                     concat.release_request_pad(&pad)
+                        //                 }
+                        //             }
+                        //         }
+                        //     }
+                        // };
 
                         // MessageView::StateChanged(state) => {
                         //     if let Some(source) = state.get_src() {
@@ -430,7 +462,6 @@ impl actix::Handler<PlayerControl> for Player {
 
                 // Create stream decode elements
                 let stream = gst::Bin::new(None);
-                // let binsrcpad = gst::GhostPad::new_no_target(None, gst::PadDirection::Src);
 
                 let decoder = gst::ElementFactory::make("decodebin", Some("decoder")).unwrap();
                 if stream.add(&decoder).is_err() {
@@ -440,11 +471,7 @@ impl actix::Handler<PlayerControl> for Player {
                 let concat_weak = self.pipeline.get_by_name("concat").unwrap().downgrade();
                 let stream_weak = stream.downgrade();
                 decoder.connect_pad_added(move |_, src_pad| {
-                    let concat = match concat_weak.upgrade() {
-                        Some(concat) => concat,
-                        None => return,
-                    };
-
+                    let concat = concat_weak.upgrade().unwrap();
                     let stream = stream_weak.upgrade().unwrap();
 
                     if let Some(sink_pad) = concat.get_compatible_pad(src_pad, None) {
@@ -513,7 +540,7 @@ impl actix::Handler<PlayerControl> for Player {
                     );
 
                     let proto = self.proto.clone();
-                    src_pad.add_probe(gst::PadProbeType::EVENT_BOTH, move |_, probe_info| {
+                    src_pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_, probe_info| {
                         if let Some(ref probe_data) = probe_info.data {
                             if let gst::PadProbeData::Event(event) = probe_data {
                                 if event.get_type() == gst::EventType::Eos {
@@ -527,22 +554,6 @@ impl actix::Handler<PlayerControl> for Player {
 
                 let _ = self.pipeline.add(&stream);
                 let _ = stream.sync_state_with_parent();
-
-                if self.streams.len() > 1 {
-                    if let Some(old_stream) = self.streams.pop() {
-                        if old_stream.set_state(gst::State::Null).is_ok() {
-                            let _ = self.pipeline.remove(&old_stream);
-                            if let Some(pad) =
-                                self.pipeline.find_unlinked_pad(gst::PadDirection::Sink)
-                            {
-                                if pad.get_parent().unwrap().get_name().as_str() == "concat" {
-                                    let concat = self.pipeline.get_by_name("concat").unwrap();
-                                    concat.release_request_pad(&pad)
-                                }
-                            }
-                        }
-                    }
-                };
 
                 self.streams.insert(0, stream);
 
@@ -614,7 +625,6 @@ impl actix::Handler<PlayerControl> for Player {
                 if autostart {
                     if self.pipeline.set_state(gst::State::Playing).is_ok() {
                         info!("Autostarting track");
-                        self.proto.do_send(PlayerMessages::Start);
                     }
                 }
             }
