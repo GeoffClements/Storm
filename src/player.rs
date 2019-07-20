@@ -1,4 +1,5 @@
 use actix;
+use actix::AsyncContext;
 use gst;
 use gst::prelude::*;
 use gst::MessageView;
@@ -6,7 +7,6 @@ use thread_control;
 
 use proto;
 
-use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
 #[derive(Copy, Clone)]
@@ -87,6 +87,7 @@ pub enum PlayerControl {
     Pause(bool),
     Unpause(bool),
     Skip(u32),
+    Cleanup,
 }
 
 impl actix::Message for PlayerControl {
@@ -108,9 +109,7 @@ pub enum PlayerMessages {
         output_buffer_fullness: u32,
     },
     Bufsize(usize),
-    Overrun,
-    // Underrun,
-    // Outputunderrun,
+    Sendstatus,
 }
 
 impl actix::Message for PlayerMessages {
@@ -125,7 +124,6 @@ pub struct Player {
     pub proto: actix::Addr<proto::Proto>,
     pipeline: gst::Pipeline,
     streams: Vec<gst::Bin>,
-    data_probe: Option<gst::PadProbeId>,
 }
 
 impl Player {
@@ -143,19 +141,6 @@ impl Player {
             proto: proto,
             pipeline: gst::Pipeline::new(Some("stormpipe")),
             streams: Vec::with_capacity(2),
-            data_probe: None,
-        }
-    }
-
-    fn delete_source(&mut self) {
-        if let Some(source) = self.pipeline.get_by_name("source") {
-            if let Some(ibuf) = self.pipeline.get_by_name("ibuf") {
-                source.unlink(&ibuf);
-                if !source.set_state(gst::State::Null).is_err() {
-                    info!("Destroying: {}", source.get_name());
-                    let _ = self.pipeline.remove(&source);
-                }
-            }
         }
     }
 }
@@ -163,7 +148,7 @@ impl Player {
 impl actix::Actor for Player {
     type Context = actix::Context<Self>;
 
-    fn started(&mut self, _ctx: &mut actix::Context<Self>) {
+    fn started(&mut self, ctx: &mut actix::Context<Self>) {
         if self.pipeline.get_by_name("sink").is_some() {
             return;
         }
@@ -245,12 +230,14 @@ impl actix::Actor for Player {
         let concat = gst::ElementFactory::make("concat", Some("concat")).unwrap();
         let concat_src = concat.get_static_pad("src").unwrap();
         let proto = self.proto.clone();
+        let player = ctx.address().clone();
         concat_src.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_, probe_info| {
             if let Some(ref probe_data) = probe_info.data {
                 if let gst::PadProbeData::Event(event) = probe_data {
                     if event.get_type() == gst::EventType::StreamStart {
-                        info!("Stream start on concat src pad");
-                        proto.do_send(PlayerMessages::Start)
+                        proto.do_send(PlayerMessages::Start);
+                        proto.do_send(PlayerMessages::Sendstatus);
+                        player.do_send(PlayerControl::Cleanup);
                     }
                 }
             }
@@ -315,22 +302,6 @@ impl actix::Actor for Player {
                                 }
                             }
                         }
-
-                        // if self.streams.len() > 1 {
-                        //     if let Some(old_stream) = self.streams.pop() {
-                        //         if old_stream.set_state(gst::State::Null).is_ok() {
-                        //             let _ = self.pipeline.remove(&old_stream);
-                        //             if let Some(pad) =
-                        //                 self.pipeline.find_unlinked_pad(gst::PadDirection::Sink)
-                        //             {
-                        //                 if pad.get_parent().unwrap().get_name().as_str() == "concat" {
-                        //                     let concat = self.pipeline.get_by_name("concat").unwrap();
-                        //                     concat.release_request_pad(&pad)
-                        //                 }
-                        //             }
-                        //         }
-                        //     }
-                        // };
 
                         // MessageView::StateChanged(state) => {
                         //     if let Some(source) = state.get_src() {
@@ -675,11 +646,25 @@ impl actix::Handler<PlayerControl> for Player {
                 )
                 .build();
                 self.pipeline.send_event(seek);
-            } // PlayerControl::Deletesource => {
-              //     if self.sources.len() > 1 {
-              //         self.delete_last_source()
-              //     }
-              // }
+            }
+
+            PlayerControl::Cleanup => {
+                while self.streams.len() > 1 {
+                    if let Some(old_stream) = self.streams.pop() {
+                        if old_stream.set_state(gst::State::Null).is_ok() {
+                            let _ = self.pipeline.remove(&old_stream);
+                            if let Some(pad) =
+                                self.pipeline.find_unlinked_pad(gst::PadDirection::Sink)
+                            {
+                                if pad.get_parent().unwrap().get_name().as_str() == "concat" {
+                                    let concat = self.pipeline.get_by_name("concat").unwrap();
+                                    concat.release_request_pad(&pad)
+                                }
+                            }
+                        }
+                    }
+                };
+            }
         }
     }
 }

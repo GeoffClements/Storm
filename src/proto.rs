@@ -282,19 +282,10 @@ impl actix::Handler<player::PlayerMessages> for Proto {
                     self.stat_data.bytes_received.wrapping_add(buf_size as u64);
             }
 
-            player::PlayerMessages::Overrun => {
-                if !self.autostart {
-                    self.player.do_send(player::PlayerControl::Pause(true));
-                    self.framed.write(self.stat_data.make_stat_message("STMl"));
-                    self.autostart = true;
-                }
-            } // player::PlayerMessages::Underrun => {
-              //     self.framed.write(self.stat_data.make_stat_message("STMu"));
-              // }
-
-              // player::PlayerMessages::Outputunderrun => {
-              //     self.framed.write(self.stat_data.make_stat_message("STMo"));
-              // }
+            player::PlayerMessages::Sendstatus => {
+                self.stat_data.jiffies = self.jiffies();
+                self.framed.write(self.stat_data.make_stat_message("STMt"));
+            }
         }
     }
 }
