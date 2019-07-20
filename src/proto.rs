@@ -92,7 +92,7 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                     ip_address,
                     sync_group_id,
                     self.name.as_str(),
-                    self.stat_data.buffer_size,
+                    Some(self.stat_data.buffer_size),
                     self.output_device.clone(),
                 );
                 ctx.stop();
@@ -115,6 +115,8 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 http_headers,
             } => {
                 info!("Got stream start");
+                let bufsize = if self.stat_data.buffer_size > threshold {self.stat_data.buffer_size} else {threshold};
+                self.stat_data.buffer_size = bufsize;
                 self.stat_data.elapsed_milliseconds = 0;
                 self.stat_data.elapsed_seconds = 0;
                 self.stat_data.fullness = 0;
@@ -124,7 +126,7 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 self.framed.write(self.stat_data.make_stat_message("STMc"));
                 self.player.do_send(player::PlayerControl::Stream {
                     autostart,
-                    threshold,
+                    threshold: bufsize * 1024,
                     output_threshold,
                     replay_gain,
                     server_port,
@@ -296,7 +298,7 @@ pub fn run(
     server_ip: Ipv4Addr,
     sync_group: Option<String>,
     name: &str,
-    bufsize: u32,
+    bufsize: Option<u32>,
     output_device: player::AudioDevice,
 ) -> std::io::Result<()> {
     let sys = System::new("Storm");
@@ -309,7 +311,7 @@ fn spawn_proto(
     server_ip: Ipv4Addr,
     sync_group: Option<String>,
     name: &str,
-    bufsize: u32,
+    bufsize: Option<u32>,
     output_device: player::AudioDevice,
 ) {
     let name = name.to_owned();
@@ -332,7 +334,7 @@ fn spawn_proto(
                         player: player.start(),
                         framed: actix::io::FramedWrite::new(w, codec::SlimCodec, ctx),
                     };
-                    proto.stat_data.buffer_size = bufsize;
+                    proto.stat_data.buffer_size = bufsize.unwrap_or(0);
                     proto
                 });
                 future::ok(())

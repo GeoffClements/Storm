@@ -63,8 +63,8 @@ fn main() {
             clap::Arg::with_name("buffersize")
                 .short("b")
                 .long("buffersize")
+                .takes_value(true)
                 .help("Input buffer size in KiB")
-                .default_value("2048")
                 .validator(|bufsize| {
                     bufsize
                         .parse::<u32>()
@@ -124,18 +124,21 @@ If no device is specified the default for that service is used.",
         }),
     };
 
+    let bufsize = opts
+        .value_of("buffersize")
+        .map(|b| b.parse::<u32>().unwrap());
+
     info!("Using server address: {}", server_addr);
     info!("Name of player is: {}", opts.value_of("name").unwrap());
-    info!(
-        "Input buffer size is: {} KiB",
-        opts.value_of("buffersize").unwrap().parse::<u32>().unwrap()
-    );
+    if let Some(bufsize) = bufsize {
+        info!("Input buffer size is: {} KiB", bufsize);
+    }
 
     match proto::run(
         server_addr,
         None,
         opts.value_of("name").unwrap(),
-        opts.value_of("buffersize").unwrap().parse::<u32>().unwrap() * 1024,
+        bufsize,
         player::AudioDevice::from(
             opts.values_of("output-device")
                 .unwrap()

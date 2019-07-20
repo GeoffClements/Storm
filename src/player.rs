@@ -145,6 +145,10 @@ impl Player {
     }
 
     fn clean_streams(&mut self, all: bool) {
+        if all {
+            let _ = self.pipeline.set_state(gst::State::Ready);
+        };
+
         while self.streams.len() > {
             if all {
                 0
@@ -153,7 +157,15 @@ impl Player {
             }
         } {
             if let Some(old_stream) = self.streams.pop() {
+                let source = old_stream.get_by_name("source").unwrap();
+                source.set_state(gst::State::Null).unwrap();
                 if old_stream.set_state(gst::State::Null).is_ok() {
+                    // let _ = old_stream.iterate_elements().foreach(|e| {
+                    //     let _ = e.set_state(gst::State::Null);
+                    //     let _ = e.get_state(gst::ClockTime::from_seconds(100));
+                    // });
+                    let _ = old_stream.get_state(gst::ClockTime::from_mseconds(500));
+
                     let _ = self.pipeline.remove(&old_stream);
                     while let Some(pad) = self.pipeline.find_unlinked_pad(gst::PadDirection::Sink) {
                         if let Some(elem) = pad.get_parent_element() {
@@ -177,12 +189,10 @@ impl actix::Actor for Player {
         }
 
         // Audio Sink
-        let sink = {
-            match self.output_device.service {
-                AudioService::Auto => gst::ElementFactory::make("autoaudiosink", Some("sink")),
-                AudioService::Alsa => gst::ElementFactory::make("alsasink", Some("sink")),
-                AudioService::Pulse => gst::ElementFactory::make("pulsesink", Some("sink")),
-            }
+        let sink = match self.output_device.service {
+            AudioService::Auto => gst::ElementFactory::make("autoaudiosink", Some("sink")),
+            AudioService::Alsa => gst::ElementFactory::make("alsasink", Some("sink")),
+            AudioService::Pulse => gst::ElementFactory::make("pulsesink", Some("sink")),
         }
         .unwrap();
 
@@ -277,6 +287,7 @@ impl actix::Actor for Player {
 
         //Set up periodic message
         let proto = self.proto.clone();
+        let player = ctx.address().clone();
         let (flag, control) = thread_control::make_pair();
         self.thread = Some(control);
         let bus = self.pipeline.get_bus().unwrap();
@@ -306,6 +317,7 @@ impl actix::Actor for Player {
                                 }
                             );
                             proto.do_send(PlayerMessages::Error);
+                            player.do_send(PlayerControl::Cleanup(true));
                         }
 
                         MessageView::Element(element) => {
@@ -327,6 +339,10 @@ impl actix::Actor for Player {
                             let _ = pipeline.recalculate_latency();
                         }
 
+                        // MessageView::Tag(tag) => {
+                        //     let tags = tag.get_tags();
+                        //     info!("{}", tags.to_string());
+                        // }
                         _ => (),
                     },
 
@@ -424,7 +440,6 @@ impl actix::Handler<PlayerControl> for Player {
                     }
                 });
 
-                // TODO: Override buffer size with command line option
                 let ibuf = gst::ElementFactory::make("queue", Some("ibuf")).unwrap();
                 ibuf.set_property("max-size-bytes", &(&threshold)).unwrap();
                 if stream.add(&ibuf).is_ok() {
