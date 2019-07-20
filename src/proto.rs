@@ -26,7 +26,6 @@ pub struct Proto {
     name: String,
     output_device: player::AudioDevice,
     autostart: bool,
-    allow_eos: bool,
     player: actix::Addr<player::Player>,
     framed: actix::io::FramedWrite<WriteHalf<TcpStream>, codec::SlimCodec>,
 }
@@ -241,10 +240,7 @@ impl actix::Handler<player::PlayerMessages> for Proto {
             }
 
             player::PlayerMessages::Eos => {
-                if self.allow_eos {
-                    self.framed.write(self.stat_data.make_stat_message("STMd"));
-                    self.allow_eos = false;
-                }
+                self.framed.write(self.stat_data.make_stat_message("STMd"));
             }
 
             player::PlayerMessages::Established => {
@@ -262,7 +258,6 @@ impl actix::Handler<player::PlayerMessages> for Proto {
             }
 
             player::PlayerMessages::Start => {
-                self.allow_eos = true;
                 self.framed.write(self.stat_data.make_stat_message("STMs"));
             }
 
@@ -334,7 +329,6 @@ fn spawn_proto(
                         name: name,
                         output_device: output_device,
                         autostart: true,
-                        allow_eos: false,
                         player: player.start(),
                         framed: actix::io::FramedWrite::new(w, codec::SlimCodec, ctx),
                     };

@@ -87,7 +87,7 @@ pub enum PlayerControl {
     Pause(bool),
     Unpause(bool),
     Skip(u32),
-    Cleanup,
+    Cleanup(bool),
 }
 
 impl actix::Message for PlayerControl {
@@ -141,6 +141,29 @@ impl Player {
             proto: proto,
             pipeline: gst::Pipeline::new(Some("stormpipe")),
             streams: Vec::with_capacity(2),
+        }
+    }
+
+    fn clean_streams(&mut self, all: bool) {
+        while self.streams.len() > {
+            if all {
+                0
+            } else {
+                1
+            }
+        } {
+            if let Some(old_stream) = self.streams.pop() {
+                if old_stream.set_state(gst::State::Null).is_ok() {
+                    let _ = self.pipeline.remove(&old_stream);
+                    while let Some(pad) = self.pipeline.find_unlinked_pad(gst::PadDirection::Sink) {
+                        if let Some(elem) = pad.get_parent_element() {
+                            if elem.get_name() == "concat" {
+                                elem.release_request_pad(&pad)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -237,7 +260,7 @@ impl actix::Actor for Player {
                     if event.get_type() == gst::EventType::StreamStart {
                         proto.do_send(PlayerMessages::Start);
                         proto.do_send(PlayerMessages::Sendstatus);
-                        player.do_send(PlayerControl::Cleanup);
+                        player.do_send(PlayerControl::Cleanup(false));
                     }
                 }
             }
@@ -285,10 +308,6 @@ impl actix::Actor for Player {
                             proto.do_send(PlayerMessages::Error);
                         }
 
-                        // MessageView::Eos(..) => {
-                        //     info!("End of stream detected");
-                        //     proto.do_send(PlayerMessages::Eos);
-                        // }
                         MessageView::Element(element) => {
                             if let Some(source) = element.get_src() {
                                 if source.get_name() == "source" {
@@ -303,20 +322,6 @@ impl actix::Actor for Player {
                             }
                         }
 
-                        // MessageView::StateChanged(state) => {
-                        //     if let Some(source) = state.get_src() {
-                        //         if source.get_name() == "stormpipe" {
-                        //             if state.get_current() == gst::State::Null {
-                        //                 info!("Pipeline moved to null state");
-                        //             }
-                        //         }
-                        //     }
-                        // }
-
-                        // MessageView::StreamStart(..) => {
-                        //     info!("Stream is starting");
-                        //     proto.do_send(PlayerMessages::Start);
-                        // }
                         MessageView::Latency(..) => {
                             info!("Recalculating latency");
                             let _ = pipeline.recalculate_latency();
@@ -336,36 +341,6 @@ impl actix::Actor for Player {
                 }
             }
         });
-
-        //         let decoder = elements.get("decoder").unwrap();
-        //         let converter_weak = elements.get("converter").unwrap().downgrade();
-        //         decoder.connect_pad_added(move |_, src_pad| {
-        //             let converter = match converter_weak.upgrade() {
-        //                 Some(converter) => converter,
-        //                 None => return,
-        //             };
-
-        //             let sink_pad = converter
-        //                 .get_static_pad("sink")
-        //                 .expect("Failed to get static sink pad from convert");
-        //             if sink_pad.is_linked() {
-        //                 info!("We are already linked. Ignoring.");
-        //                 return;
-        //             }
-
-        //             let new_pad_caps = src_pad
-        //                 .get_current_caps()
-        //                 .expect("Failed to get caps of new pad.");
-        //             let new_pad_struct = new_pad_caps
-        //                 .get_structure(0)
-        //                 .expect("Failed to get first structure of caps.");
-        //             let new_pad_type = new_pad_struct.get_name();
-
-        //             if new_pad_type.starts_with("audio/x-raw") {
-        //                 info!("Linking decoder to converter");
-        //                 let _ = src_pad.link(&sink_pad);
-        //             }
-        //         });
     }
 }
 
@@ -406,11 +381,6 @@ impl actix::Handler<PlayerControl> for Player {
                 http_headers,
             } => {
                 info!("Got stream request, autostart: {}", autostart);
-
-                // if self.pipeline.set_state(gst::State::Ready) == gst::StateChangeReturn::Failure {
-                //     error!("Unable to set the pipeline to the Playing state");
-                // }
-                //self.fill_pipeline();
 
                 let server_ip = if server_ip == Ipv4Addr::new(0, 0, 0, 0) {
                     control_ip
@@ -528,71 +498,6 @@ impl actix::Handler<PlayerControl> for Player {
 
                 self.streams.insert(0, stream);
 
-                // if self.pipeline.get_by_name("source").is_none() {
-                //     let _ = self.pipeline.set_state(gst::State::Ready);
-                //     match gst::ElementFactory::make("souphttpsrc", Some("source")) {
-                //         Some(source) => {
-                //             info!("Creating new source");
-                //             source
-                //                 .set_property("user-agent", &"Storm".to_owned())
-                //                 .unwrap();
-                //             source.set_property("location", &location).unwrap();
-                //             self.pipeline.add(&source).unwrap();
-                //             if let Some(ibuf) = self.pipeline.get_by_name("ibuf") {
-                //                 source.link(&ibuf).unwrap();
-                //             }
-                //             let _ = source.sync_state_with_parent();
-                //             if let Some(src_pad) = source.get_static_pad("src") {
-                //                 let proto = self.proto.clone();
-                //                 src_pad.add_probe(
-                //                     gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
-                //                     move |_, probe_info| {
-                //                         let buf_size = match probe_info.data {
-                //                             Some(gst::PadProbeData::Buffer(ref buffer)) => {
-                //                                 buffer.get_size()
-                //                             }
-                //                             Some(gst::PadProbeData::BufferList(ref buflist)) => {
-                //                                 buflist.iter().map(|b| b.get_size()).sum()
-                //                             }
-                //                             _ => 0,
-                //                         };
-                //                         proto.do_send(PlayerMessages::Bufsize(buf_size));
-                //                         gst::PadProbeReturn::Ok
-                //                     },
-                //                 );
-                //                 let proto = self.proto.clone();
-                //                 src_pad.add_probe(
-                //                     gst::PadProbeType::EVENT_BOTH,
-                //                     move |_, probe_info| {
-                //                         if let Some(ref probe_data) = probe_info.data {
-                //                             if let gst::PadProbeData::Event(event) = probe_data {
-                //                                 if event.get_type() == gst::EventType::Eos {
-                //                                     proto.do_send(PlayerMessages::Eos);
-                //                                 }
-                //                             }
-                //                         }
-                //                         gst::PadProbeReturn::Ok
-                //                     },
-                //                 );
-                //             };
-                //             let _ = source.sync_state_with_parent();
-                //         }
-                //         None => {
-                //             error!("Unable to create source element");
-                //             ::std::process::exit(1);
-                //         }
-                //     }
-                // } else {
-                //     // let source = self.pipeline.get_by_name("source").unwrap();
-                //     // let _ = source.set_state(gst::State::Ready);
-                //     // source.set_property("location", &location).unwrap();
-                //     // let _ = source.sync_state_with_parent();
-                // }
-
-                // if !self.pipeline.set_state(gst::State::Playing).is_err() {
-                //     error!("Unable to set the pipeline to the Playing state");
-                // }
-
                 if autostart {
                     if self.pipeline.set_state(gst::State::Playing).is_ok() {
                         info!("Autostarting track");
@@ -604,6 +509,7 @@ impl actix::Handler<PlayerControl> for Player {
                 if !self.pipeline.set_state(gst::State::Ready).is_err() {
                     info!("Stopped stream");
                     self.proto.do_send(PlayerMessages::Flushed);
+                    self.clean_streams(true);
                 }
             }
 
@@ -648,23 +554,7 @@ impl actix::Handler<PlayerControl> for Player {
                 self.pipeline.send_event(seek);
             }
 
-            PlayerControl::Cleanup => {
-                while self.streams.len() > 1 {
-                    if let Some(old_stream) = self.streams.pop() {
-                        if old_stream.set_state(gst::State::Null).is_ok() {
-                            let _ = self.pipeline.remove(&old_stream);
-                            if let Some(pad) =
-                                self.pipeline.find_unlinked_pad(gst::PadDirection::Sink)
-                            {
-                                if pad.get_parent().unwrap().get_name().as_str() == "concat" {
-                                    let concat = self.pipeline.get_by_name("concat").unwrap();
-                                    concat.release_request_pad(&pad)
-                                }
-                            }
-                        }
-                    }
-                };
-            }
+            PlayerControl::Cleanup(all) => self.clean_streams(all),
         }
     }
 }
