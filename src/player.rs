@@ -160,8 +160,6 @@ impl Player {
             }
         } {
             if let Some(old_stream) = self.streams.pop() {
-                let source = old_stream.get_by_name("source").unwrap();
-                source.set_state(gst::State::Null).unwrap();
                 if old_stream.set_state(gst::State::Null).is_ok() {
                     let _ = self.pipeline.remove(&old_stream);
                     while let Some(pad) = self.pipeline.find_unlinked_pad(gst::PadDirection::Sink) {
