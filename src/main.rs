@@ -25,7 +25,7 @@ use log::LevelFilter;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 
-const VERSION: &'static str = "0.3.0";
+const VERSION: &'static str = "0.3.1";
 
 fn main() {
     let opts = clap::App::new("Storm")

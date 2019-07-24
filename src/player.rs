@@ -225,23 +225,13 @@ impl actix::Actor for Player {
             return;
         };
 
-        // Audio Converter
-        let converter = gst::ElementFactory::make("audioconvert", Some("converter")).unwrap();
-        if self.pipeline.add(&converter).is_err() {
-            return;
-        };
-
-        if converter.link(&resampler).is_err() {
-            return;
-        };
-
         // Volume
         let volume = gst::ElementFactory::make("volume", Some("volume")).unwrap();
         if self.pipeline.add(&volume).is_err() {
             return;
         };
 
-        if volume.link(&converter).is_err() {
+        if volume.link(&resampler).is_err() {
             return;
         };
 
@@ -252,6 +242,16 @@ impl actix::Actor for Player {
         };
 
         if obuf.link(&volume).is_err() {
+            return;
+        };
+
+        // Audio Converter
+        let converter = gst::ElementFactory::make("audioconvert", Some("converter")).unwrap();
+        if self.pipeline.add(&converter).is_err() {
+            return;
+        };
+
+        if converter.link(&obuf).is_err() {
             return;
         };
 
@@ -277,7 +277,7 @@ impl actix::Actor for Player {
             return;
         };
 
-        if concat.link(&obuf).is_err() {
+        if concat.link(&converter).is_err() {
             return;
         };
 
