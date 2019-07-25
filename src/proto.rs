@@ -3,6 +3,7 @@ use actix::{Actor, ActorContext, Arbiter, AsyncContext, Context, System};
 use futures::{future, Future, Sink, Stream};
 use mac_address;
 use rand::{thread_rng, Rng};
+use regex::RegexSetBuilder;
 use tokio_codec::FramedRead;
 use tokio_core;
 use tokio_io::io::WriteHalf;
@@ -16,6 +17,7 @@ use player;
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 pub struct Proto {
@@ -37,22 +39,26 @@ impl Actor for Proto {
     //  Get capabilities from GStreamer (if it's possible)
     fn started(&mut self, _ctx: &mut Context<Self>) {
         let name = format!("ModelName={}", self.name);
-        let caps = vec![
-            "flc",
-            "ogg",
-            "mp3",
-            "wma",
-            "aac",
+        let caps = get_decode_caps();
+        let player_caps: &[&str] = &[
             "Model=Storm",
             name.as_str(),
             "AccuratePlayPoints=1",
             "HasDigitalOut=1",
             "HasPolarityInversion=1",
         ];
-        let mut caps: Vec<String> = caps.into_iter().map(|s| s.to_owned()).collect();
+
+        let mut caps: Vec<String> = caps
+            .iter()
+            .cloned()
+            .chain(player_caps.iter().cloned().map(|s| s.to_owned()))
+            .collect();
+
         if let Some(ref sync_group) = self.sync_group_id {
             caps.push(format!("SyncgroupID={}", sync_group));
         }
+
+        info!("Caps are: {:?}", caps);
 
         let mac = get_mac();
         info!("Using MAC address: {}", mac);
@@ -115,7 +121,11 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
                 http_headers,
             } => {
                 info!("Got stream start");
-                let bufsize = if self.stat_data.buffer_size > threshold {self.stat_data.buffer_size} else {threshold};
+                let bufsize = if self.stat_data.buffer_size > threshold {
+                    self.stat_data.buffer_size
+                } else {
+                    threshold
+                };
                 self.stat_data.buffer_size = bufsize;
                 self.stat_data.elapsed_milliseconds = 0;
                 self.stat_data.elapsed_seconds = 0;
@@ -427,4 +437,45 @@ fn random_mac() -> mac_address::MacAddress {
     mac_temp[0] |= 0b0000_0010;
     mac.copy_from_slice(&mac_temp);
     mac_address::MacAddress::new(mac)
+}
+
+fn get_decode_caps() -> Vec<String> {
+    let ffmpeg = match Command::new("/usr/bin/ffmpeg").arg("-decoders").output() {
+        Ok(output) => output.stdout,
+        Err(_) => {
+            warn!("No decoders detected");
+            Vec::new()
+        }
+    };
+
+    let decoders = vec![
+        ("flac", "flc"),
+        ("alac", "alc"),
+        ("aac", "aac"),
+        ("wma", "wma"),
+        ("vorbis", "ogg"),
+        ("mp3", "mp3"),
+        ("wmap", "wmap"),
+        ("wmal", "wmal"),
+        ("pcm", "pcm"),
+    ];
+
+    let sets: Vec<String> = decoders
+        .iter()
+        .map(|s| [r"^.A.....\s+", s.0].join(""))
+        .collect();
+
+    let matches: Vec<_> = match RegexSetBuilder::new(&sets).multi_line(true).build() {
+        Ok(set) => set,
+        Err(_) => return Vec::new(),
+    }
+    .matches(std::str::from_utf8(&ffmpeg).unwrap())
+    .into_iter()
+    .collect();
+
+    let mut caps = Vec::new();
+    matches
+        .iter()
+        .for_each(|cap| caps.push(decoders[*cap].1.to_owned()));
+    caps
 }
