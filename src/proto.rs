@@ -35,8 +35,6 @@ pub struct Proto {
 impl Actor for Proto {
     type Context = Context<Self>;
 
-    // TODO:
-    //  Get capabilities from GStreamer (if it's possible)
     fn started(&mut self, _ctx: &mut Context<Self>) {
         let name = format!("ModelName={}", self.name);
         let caps = get_decode_caps();
