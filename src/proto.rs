@@ -45,6 +45,7 @@ impl Actor for Proto {
             "HasDigitalOut=1",
             "HasPolarityInversion=1",
         ];
+        info!("Available docoders: {}", caps.join(","));
 
         let mut caps: Vec<String> = caps
             .iter()
@@ -53,10 +54,9 @@ impl Actor for Proto {
             .collect();
 
         if let Some(ref sync_group) = self.sync_group_id {
+            info!("Setting sync group: {}", sync_group);
             caps.push(format!("SyncgroupID={}", sync_group));
         }
-
-        info!("Caps are: {:?}", caps);
 
         let mac = get_mac();
         info!("Using MAC address: {}", mac);
@@ -290,6 +290,14 @@ impl actix::Handler<player::PlayerMessages> for Proto {
             player::PlayerMessages::Sendstatus => {
                 self.stat_data.jiffies = self.jiffies();
                 self.framed.write(self.stat_data.make_stat_message("STMt"));
+            }
+
+            player::PlayerMessages::Overrun => {
+                if !self.autostart {
+                    self.player.do_send(player::PlayerControl::Pause(true));
+                    self.framed.write(self.stat_data.make_stat_message("STMl"));
+                    self.autostart = true;
+                }
             }
         }
     }

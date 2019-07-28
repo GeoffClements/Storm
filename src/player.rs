@@ -111,6 +111,7 @@ pub enum PlayerMessages {
     },
     Bufsize(usize),
     Sendstatus,
+    Overrun,
 }
 
 impl actix::Message for PlayerMessages {
@@ -438,9 +439,14 @@ impl actix::Handler<PlayerControl> for Player {
 
                 let ibuf = gst::ElementFactory::make("queue", Some("ibuf")).unwrap();
                 ibuf.set_property("max-size-bytes", &(&threshold)).unwrap();
+                let proto = self.proto.clone();
                 if stream.add(&ibuf).is_ok() {
-                    if ibuf.link(&decoder).is_err() {
-                        return;
+                    if ibuf.link(&decoder).is_ok() {
+                        ibuf.connect("overrun", true, move |_| {
+                            proto.do_send(PlayerMessages::Overrun);
+                            None
+                        })
+                        .unwrap();
                     }
                 } else {
                     return;
@@ -509,11 +515,7 @@ impl actix::Handler<PlayerControl> for Player {
 
                 self.streams.insert(0, stream);
 
-                if autostart {
-                    if self.pipeline.set_state(gst::State::Playing).is_ok() {
-                        info!("Autostarting track");
-                    }
-                }
+                let _ = self.pipeline.set_state(gst::State::Playing);
             }
 
             PlayerControl::Stop => {
