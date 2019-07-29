@@ -266,7 +266,6 @@ impl actix::Actor for Player {
                 if let gst::PadProbeData::Event(event) = probe_data {
                     if event.get_type() == gst::EventType::StreamStart {
                         proto.do_send(PlayerMessages::Start);
-                        proto.do_send(PlayerMessages::Sendstatus);
                         player.do_send(PlayerControl::Cleanup(false));
                     }
                 }

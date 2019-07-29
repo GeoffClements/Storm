@@ -235,7 +235,7 @@ impl actix::StreamHandler<codec::ServerMessage, io::Error> for Proto {
 impl actix::Handler<player::PlayerMessages> for Proto {
     type Result = ();
 
-    fn handle(&mut self, msg: player::PlayerMessages, _ctx: &mut actix::Context<Self>) {
+    fn handle(&mut self, msg: player::PlayerMessages, ctx: &mut actix::Context<Self>) {
         match msg {
             player::PlayerMessages::Flushed => {
                 self.framed.write(self.stat_data.make_stat_message("STMf"));
@@ -269,6 +269,15 @@ impl actix::Handler<player::PlayerMessages> for Proto {
 
             player::PlayerMessages::Start => {
                 self.framed.write(self.stat_data.make_stat_message("STMs"));
+                let proto = ctx.address().clone();
+                Arbiter::spawn(
+                    tokio_timer::Delay::new(Instant::now() + Duration::from_millis(400))
+                        .and_then(move |_| {
+                            proto.do_send(player::PlayerMessages::Sendstatus);
+                            future::ok(())
+                        })
+                        .map_err(|_| ()),
+                )
             }
 
             player::PlayerMessages::Streamdata {
