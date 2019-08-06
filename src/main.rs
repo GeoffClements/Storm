@@ -14,6 +14,7 @@ extern crate tokio_core;
 extern crate tokio_io;
 extern crate tokio_signal;
 extern crate tokio_tcp;
+extern crate tokio_threadpool;
 extern crate tokio_timer;
 extern crate regex;
 

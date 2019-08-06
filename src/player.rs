@@ -1,9 +1,12 @@
 use actix;
 use actix::{Actor, AsyncContext};
+use futures::future::poll_fn;
+use futures::Future;
 use gst;
 use gst::prelude::*;
 use gst::MessageView;
 use thread_control;
+use tokio_threadpool::blocking;
 
 use proto;
 
@@ -162,15 +165,39 @@ impl Player {
         } {
             if let Some(old_stream) = self.streams.pop() {
                 if old_stream.set_state(gst::State::Null).is_ok() {
-                    let _ = self.pipeline.remove(&old_stream);
-                    while let Some(pad) = self.pipeline.find_unlinked_pad(gst::PadDirection::Sink) {
-                        if let Some(elem) = pad.get_parent_element() {
-                            if elem.get_name() == "concat" {
-                                elem.release_request_pad(&pad)
-                            }
-                        }
-                    }
-                    self.crypt.do_send(Corpse { corpse: old_stream });
+                    actix::Arbiter::spawn(
+                        poll_fn(move || {
+                            blocking(|| {
+                                while !{
+                                    match old_stream.iterate_elements().fold(
+                                        false,
+                                        |is_null, elem| match elem.get_state(gst::ClockTime::none())
+                                        {
+                                            (Ok(_), state, _) => {
+                                                Ok(state == gst::State::Null && is_null)
+                                            }
+                                            _ => Err(false),
+                                        },
+                                    ) {
+                                        Ok(is_null) => is_null,
+                                        _ => false,
+                                    }
+                                } {}
+                            })
+                        })
+                        .map(|_| ())
+                        .map_err(|_| ()),
+                    );
+
+                    // let _ = self.pipeline.remove(&old_stream);
+                    // while let Some(pad) = self.pipeline.find_unlinked_pad(gst::PadDirection::Sink) {
+                    //     if let Some(elem) = pad.get_parent_element() {
+                    //         if elem.get_name() == "concat" {
+                    //             elem.release_request_pad(&pad)
+                    //         }
+                    //     }
+                    // }
+                    // self.crypt.do_send(Corpse { corpse: old_stream })
                 }
             }
         }

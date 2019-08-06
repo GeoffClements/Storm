@@ -464,16 +464,16 @@ fn get_decode_caps() -> Vec<String> {
     };
 
     let decoders = vec![
-        ("flac", "flc"),
         ("alac", "alc"),
-        ("aac", "aac"),
         ("wma", "wma"),
-        ("vorbis", "ogg"),
-        ("mp3", "mp3"),
         ("wmap", "wmap"),
         ("wmal", "wmal"),
+        ("flac", "flc"),
+        ("aac", "aac"),
+        ("vorbis", "ogg"),
         ("pcm", "pcm"),
-    ];
+        ("mp3", "mp3"),
+   ];
 
     let sets: Vec<String> = decoders
         .iter()
