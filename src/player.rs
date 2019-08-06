@@ -1,6 +1,6 @@
 use actix;
 use actix::{Actor, AsyncContext};
-use futures::future::poll_fn;
+use futures::future::{poll_fn, lazy};
 use futures::Future;
 use gst;
 use gst::prelude::*;
@@ -165,15 +165,18 @@ impl Player {
         } {
             if let Some(old_stream) = self.streams.pop() {
                 if old_stream.set_state(gst::State::Null).is_ok() {
-                    actix::Arbiter::spawn(
+                    let proto = self.proto.clone();
+                    actix::Arbiter::spawn(lazy(move || {
                         poll_fn(move || {
                             blocking(|| {
                                 while !{
+                                    info!("XXXXXXXXXX");
                                     match old_stream.iterate_elements().fold(
-                                        false,
+                                        true,
                                         |is_null, elem| match elem.get_state(gst::ClockTime::none())
                                         {
                                             (Ok(_), state, _) => {
+                                                info!("Elem: {}, State: {:?}", elem.get_name(), state);
                                                 Ok(state == gst::State::Null && is_null)
                                             }
                                             _ => Err(false),
@@ -183,20 +186,31 @@ impl Player {
                                         _ => false,
                                     }
                                 } {}
+                                if let Ok(pipeline) = old_stream
+                                    .get_parent()
+                                    .unwrap()
+                                    .dynamic_cast::<gst::Pipeline>()
+                                {
+                                    let _ = pipeline.remove(&old_stream);
+                                    while let Some(pad) =
+                                        pipeline.find_unlinked_pad(gst::PadDirection::Sink)
+                                    {
+                                        if let Some(elem) = pad.get_parent_element() {
+                                            if elem.get_name() == "concat" {
+                                                elem.release_request_pad(&pad)
+                                            }
+                                        }
+                                    }
+                                };
+                                if all {
+                                    proto.do_send(PlayerMessages::Flushed);
+                                }
                             })
-                        })
+                        })})
                         .map(|_| ())
                         .map_err(|_| ()),
                     );
 
-                    // let _ = self.pipeline.remove(&old_stream);
-                    // while let Some(pad) = self.pipeline.find_unlinked_pad(gst::PadDirection::Sink) {
-                    //     if let Some(elem) = pad.get_parent_element() {
-                    //         if elem.get_name() == "concat" {
-                    //             elem.release_request_pad(&pad)
-                    //         }
-                    //     }
-                    // }
                     // self.crypt.do_send(Corpse { corpse: old_stream })
                 }
             }
@@ -547,7 +561,7 @@ impl actix::Handler<PlayerControl> for Player {
             PlayerControl::Stop => {
                 if !self.pipeline.set_state(gst::State::Ready).is_err() {
                     info!("Stopped stream");
-                    self.proto.do_send(PlayerMessages::Flushed);
+                    // self.proto.do_send(PlayerMessages::Flushed);
                     self.clean_streams(true);
                 }
             }
