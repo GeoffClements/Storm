@@ -1,6 +1,6 @@
 use actix;
 use actix::{Actor, AsyncContext};
-use futures::future::{poll_fn, lazy};
+use futures::future::poll_fn;
 use futures::Future;
 use gst;
 use gst::prelude::*;
@@ -151,71 +151,100 @@ impl Player {
         }
     }
 
-    fn clean_streams(&mut self, all: bool) {
-        if all {
-            let _ = self.pipeline.set_state(gst::State::Ready);
-        };
-
-        while self.streams.len() > {
-            if all {
-                0
-            } else {
-                1
-            }
-        } {
-            if let Some(old_stream) = self.streams.pop() {
-                if old_stream.set_state(gst::State::Null).is_ok() {
-                    let proto = self.proto.clone();
-                    actix::Arbiter::spawn(lazy(move || {
-                        poll_fn(move || {
-                            blocking(|| {
-                                while !{
-                                    info!("XXXXXXXXXX");
-                                    match old_stream.iterate_elements().fold(
-                                        true,
-                                        |is_null, elem| match elem.get_state(gst::ClockTime::none())
-                                        {
-                                            (Ok(_), state, _) => {
-                                                info!("Elem: {}, State: {:?}", elem.get_name(), state);
-                                                Ok(state == gst::State::Null && is_null)
-                                            }
-                                            _ => Err(false),
-                                        },
-                                    ) {
-                                        Ok(is_null) => is_null,
-                                        _ => false,
-                                    }
-                                } {}
-                                if let Ok(pipeline) = old_stream
-                                    .get_parent()
-                                    .unwrap()
-                                    .dynamic_cast::<gst::Pipeline>()
-                                {
-                                    let _ = pipeline.remove(&old_stream);
-                                    while let Some(pad) =
-                                        pipeline.find_unlinked_pad(gst::PadDirection::Sink)
-                                    {
-                                        if let Some(elem) = pad.get_parent_element() {
-                                            if elem.get_name() == "concat" {
-                                                elem.release_request_pad(&pad)
-                                            }
-                                        }
-                                    }
-                                };
-                                if all {
-                                    proto.do_send(PlayerMessages::Flushed);
+    fn discard(&mut self, bin: gst::Bin) {
+        if let Some(pad) = bin.get_static_pad("src") {
+            pad.add_probe(gst::PadProbeType::IDLE, |pad, info| {
+                pad.add_probe(
+                    gst::PadProbeType::BLOCK | gst::PadProbeType::EVENT_DOWNSTREAM,
+                    |pad, info| {
+                        match &info.data {
+                            Some(gst::PadProbeData::Event(ev)) => {
+                                if ev.get_type() == gst::EventType::Eos {
+                                    // remove bin from pipeline
+                                    gst::PadProbeReturn::Drop
+                                } else {
+                                    gst::PadProbeReturn::Pass
                                 }
-                            })
-                        })})
-                        .map(|_| ())
-                        .map_err(|_| ()),
-                    );
-
-                    // self.crypt.do_send(Corpse { corpse: old_stream })
-                }
-            }
+                            }
+                            _ => gst::PadProbeReturn::Pass
+                        }
+                    },
+                );
+                // push eos into decoder
+                let eos = gst::event::Event::new_eos().build();
+                gst::PadProbeReturn::Remove
+            });
         }
     }
+
+    // fn clean_streams(&mut self, all: bool) {
+    //     // if all {
+    //     //     let _ = self.pipeline.set_state(gst::State::Ready);
+    //     // };
+
+    //     while self.streams.len() > {
+    //         if all {
+    //             0
+    //         } else {
+    //             1
+    //         }
+    //     } {
+    //         if let Some(old_stream) = self.streams.pop() {
+    //             if old_stream.set_state(gst::State::Null).is_ok() {
+    //                 let proto = self.proto.clone();
+    //                 actix::spawn(
+    //                     poll_fn(move || {
+    //                         blocking(|| {
+    //                             while !{
+    //                                 info!("XXXXXXXXXX");
+    //                                 match old_stream.iterate_elements().fold(
+    //                                     true,
+    //                                     |is_null, elem| match elem.get_state(gst::ClockTime::none())
+    //                                     {
+    //                                         (Ok(_), state, _) => {
+    //                                             info!(
+    //                                                 "Elem: {}, State: {:?}",
+    //                                                 elem.get_name(),
+    //                                                 state
+    //                                             );
+    //                                             Ok(state == gst::State::Null && is_null)
+    //                                         }
+    //                                         _ => Err(false),
+    //                                     },
+    //                                 ) {
+    //                                     Ok(is_null) => is_null,
+    //                                     _ => false,
+    //                                 }
+    //                             } {}
+    //                             if let Ok(pipeline) = old_stream
+    //                                 .get_parent()
+    //                                 .unwrap()
+    //                                 .dynamic_cast::<gst::Pipeline>()
+    //                             {
+    //                                 let _ = pipeline.remove(&old_stream);
+    //                                 while let Some(pad) =
+    //                                     pipeline.find_unlinked_pad(gst::PadDirection::Sink)
+    //                                 {
+    //                                     if let Some(elem) = pad.get_parent_element() {
+    //                                         if elem.get_name() == "concat" {
+    //                                             elem.release_request_pad(&pad)
+    //                                         }
+    //                                     }
+    //                                 }
+    //                             };
+    //                             if all {
+    //                                 proto.do_send(PlayerMessages::Flushed);
+    //                             }
+    //                         })
+    //                     })
+    //                     .map_err(|_| ()),
+    //                 );
+
+    //                 // self.crypt.do_send(Corpse { corpse: old_stream })
+    //             }
+    //         }
+    //     }
+    // }
 }
 
 impl actix::Actor for Player {
@@ -469,7 +498,7 @@ impl actix::Handler<PlayerControl> for Player {
                     let stream = stream_weak.upgrade().unwrap();
 
                     if let Some(sink_pad) = concat.get_compatible_pad(src_pad, None) {
-                        let g_pad = gst::GhostPad::new(None, src_pad).unwrap();
+                        let g_pad = gst::GhostPad::new(Some("src"), src_pad).unwrap();
                         let _ = g_pad.set_active(true);
                         if stream.add_pad(&g_pad).is_ok() {
                             let _ = g_pad.link(&sink_pad);
@@ -559,10 +588,14 @@ impl actix::Handler<PlayerControl> for Player {
             }
 
             PlayerControl::Stop => {
-                if !self.pipeline.set_state(gst::State::Ready).is_err() {
-                    info!("Stopped stream");
-                    // self.proto.do_send(PlayerMessages::Flushed);
-                    self.clean_streams(true);
+                // if !self.pipeline.set_state(gst::State::Ready).is_err() {
+                //     info!("Stopping stream");
+                //     // self.proto.do_send(PlayerMessages::Flushed);
+                //     // self.clean_streams(true);
+                // }
+
+                while let Some(bin) = self.streams.pop() {
+                    self.discard(bin);
                 }
             }
 
@@ -607,7 +640,7 @@ impl actix::Handler<PlayerControl> for Player {
                 self.pipeline.send_event(seek);
             }
 
-            PlayerControl::Cleanup(all) => self.clean_streams(all),
+            PlayerControl::Cleanup(all) => {}//self.clean_streams(all),
         }
     }
 }
