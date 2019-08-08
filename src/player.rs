@@ -91,7 +91,7 @@ pub enum PlayerControl {
     Pause(bool),
     Unpause(bool),
     Skip(u32),
-    Cleanup(bool),
+    Prune,
 }
 
 impl actix::Message for PlayerControl {
@@ -151,28 +151,19 @@ impl Player {
         }
     }
 
-    fn discard(&mut self, bin: gst::Bin) {
+    fn unlink(&mut self, bin: gst::Bin) {
         if let Some(pad) = bin.get_static_pad("src") {
-            pad.add_probe(gst::PadProbeType::IDLE, |pad, info| {
-                pad.add_probe(
-                    gst::PadProbeType::BLOCK | gst::PadProbeType::EVENT_DOWNSTREAM,
-                    |pad, info| {
-                        match &info.data {
-                            Some(gst::PadProbeData::Event(ev)) => {
-                                if ev.get_type() == gst::EventType::Eos {
-                                    // remove bin from pipeline
-                                    gst::PadProbeReturn::Drop
-                                } else {
-                                    gst::PadProbeReturn::Pass
-                                }
-                            }
-                            _ => gst::PadProbeReturn::Pass
-                        }
-                    },
-                );
-                // push eos into decoder
-                let eos = gst::event::Event::new_eos().build();
-                gst::PadProbeReturn::Remove
+            pad.add_probe(gst::PadProbeType::IDLE, move |pad, _info| {
+                if let Some(sink_pad) = pad.get_peer() {
+                    let _ = pad.unlink(&sink_pad);
+                    if let Some(concat) = sink_pad.get_parent_element() {
+                        concat.release_request_pad(&sink_pad);
+                    }
+                };
+                let strc = gst::Structure::new_empty("delete");
+                let msg = gst::Message::new_application(strc).src(Some(&bin)).build();
+                let _ = bin.post_message(&msg);
+                gst::PadProbeReturn::Drop
             });
         }
     }
@@ -336,7 +327,7 @@ impl actix::Actor for Player {
                 if let gst::PadProbeData::Event(event) = probe_data {
                     if event.get_type() == gst::EventType::StreamStart {
                         proto.do_send(PlayerMessages::Start);
-                        player.do_send(PlayerControl::Cleanup(false));
+                        player.do_send(PlayerControl::Prune);
                     }
                 }
             }
@@ -383,7 +374,7 @@ impl actix::Actor for Player {
                                 }
                             );
                             proto.do_send(PlayerMessages::Error);
-                            player.do_send(PlayerControl::Cleanup(true));
+                            player.do_send(PlayerControl::Prune);
                         }
 
                         MessageView::Element(element) => {
@@ -405,10 +396,33 @@ impl actix::Actor for Player {
                             let _ = pipeline.recalculate_latency();
                         }
 
-                        // MessageView::Tag(tag) => {
-                        //     let tags = tag.get_tags();
-                        //     info!("{}", tags.to_string());
-                        // }
+                        MessageView::Application(msg) => {
+                            if let Some(strc) = msg.get_structure() {
+                                if strc.get_name() == "delete" {
+                                    if let Some(bin_obj) = msg.get_src() {
+                                        if let Ok(bin) = bin_obj.dynamic_cast::<gst::Bin>() {
+                                            let _ = bin.set_state(gst::State::Null);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        MessageView::StateChanged(statechange) => {
+                            if statechange.get_current() == gst::State::Null {
+                                if let Some(bin_obj) = msg.get_src() {
+                                    if let Ok(bin) = bin_obj.dynamic_cast::<gst::Bin>() {
+                                        if let Some(pipe) = bin.get_parent() {
+                                            if pipe.get_name() == "stormpipe" {
+                                                info!("Bin to the farm: {}", bin.get_name());
+                                                let _ = pipeline.remove(&bin);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         _ => (),
                     },
 
@@ -423,6 +437,8 @@ impl actix::Actor for Player {
                 }
             }
         });
+
+        let _ = self.pipeline.set_state(gst::State::Playing);
     }
 }
 
@@ -584,7 +600,7 @@ impl actix::Handler<PlayerControl> for Player {
 
                 self.streams.insert(0, stream);
 
-                let _ = self.pipeline.set_state(gst::State::Playing);
+                // let _ = self.pipeline.set_state(gst::State::Playing);
             }
 
             PlayerControl::Stop => {
@@ -595,8 +611,9 @@ impl actix::Handler<PlayerControl> for Player {
                 // }
 
                 while let Some(bin) = self.streams.pop() {
-                    self.discard(bin);
+                    self.unlink(bin);
                 }
+                self.proto.do_send(PlayerMessages::Flushed);
             }
 
             PlayerControl::Pause(quiet) => {
@@ -640,7 +657,13 @@ impl actix::Handler<PlayerControl> for Player {
                 self.pipeline.send_event(seek);
             }
 
-            PlayerControl::Cleanup(all) => {}//self.clean_streams(all),
+            PlayerControl::Prune => {
+                while self.streams.len() > 1 {
+                    if let Some(bin) = self.streams.pop() {
+                        self.unlink(bin);
+                    }
+                }
+            }
         }
     }
 }
