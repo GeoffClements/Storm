@@ -153,32 +153,29 @@ impl Player {
 
     fn block(&mut self, bin: gst::Bin) {
         if let Some(pad) = bin.get_static_pad("src") {
-            pad.add_probe(
-                gst::PadProbeType::BLOCK
-                    | gst::PadProbeType::BUFFER
-                    | gst::PadProbeType::BUFFER_LIST,
-                move |pad, _info| {
-                    // pad.add_probe(
-                    //     gst::PadProbeType::BLOCK
-                    //         | gst::PadProbeType::BUFFER
-                    //         | gst::PadProbeType::BUFFER_LIST,
-                    //     |_, _| gst::PadProbeReturn::Drop,
-                    // );
+            pad.add_probe(gst::PadProbeType::IDLE, move |pad, _info| {
+                pad.add_probe(
+                    gst::PadProbeType::BLOCK
+                        | gst::PadProbeType::BUFFER
+                        | gst::PadProbeType::BUFFER_LIST,
+                    |_, _| gst::PadProbeReturn::Drop,
+                );
 
-                    if let Some(sink) = pad.get_peer() {
-                        let eos = gst::event::Event::new_eos().build();
-                        sink.send_event(eos);
-                        // let _ = pad.unlink(&sink);
-                        // if let Some(concat) = sink.get_parent_element() {
-                        //     concat.release_request_pad(&sink);
-                        // }
-                    }
-                    let strc = gst::Structure::new_empty("delete");
-                    let msg = gst::Message::new_application(strc).src(Some(&bin)).build();
-                    let _ = bin.post_message(&msg);
-                    gst::PadProbeReturn::Remove
-                },
-            );
+                if let Some(sink) = pad.get_peer() {
+                    let eos = gst::event::Event::new_eos().build();
+                    sink.send_event(eos);
+                    let flush_start = gst::event::Event::new_flush_start().build();
+                    sink.send_event(flush_start);
+                    // let _ = pad.unlink(&sink);
+                    // if let Some(concat) = sink.get_parent_element() {
+                    //     concat.release_request_pad(&sink);
+                    // }
+                }
+                let strc = gst::Structure::new_empty("delete");
+                let msg = gst::Message::new_application(strc).src(Some(&bin)).build();
+                let _ = bin.post_message(&msg);
+                gst::PadProbeReturn::Remove
+            });
         }
     }
 }
@@ -366,6 +363,7 @@ impl actix::Actor for Player {
                                                     None => None,
                                                 };
                                                 let _ = pipeline.remove(&bin);
+                                                proto.do_send(PlayerMessages::Flushed);
                                                 if let Some(sink_pad) = sink {
                                                     if let Some(concat) =
                                                         sink_pad.get_parent_element()
@@ -395,7 +393,7 @@ impl actix::Actor for Player {
             }
         });
 
-        let _ = self.pipeline.set_state(gst::State::Playing);
+        // let _ = self.pipeline.set_state(gst::State::Playing);
     }
 }
 
@@ -456,72 +454,15 @@ impl actix::Handler<PlayerControl> for Player {
                 let location = format!("http://{}:{}{}", server_ip, server_port, get);
                 info!("{}", location);
 
-                // Create stream decode elements
                 let stream = gst::Bin::new(None);
 
-                let decoder = gst::ElementFactory::make("decodebin", Some("decoder")).unwrap();
-                if stream.add(&decoder).is_err() {
-                    return;
-                };
-
-                let concat_weak = self.pipeline.get_by_name("concat").unwrap().downgrade();
-                let stream_weak = stream.downgrade();
-                decoder.connect_pad_added(move |_, src_pad| {
-                    let concat = concat_weak.upgrade().unwrap();
-                    let stream = stream_weak.upgrade().unwrap();
-
-                    if let Some(sink_pad) = concat.get_compatible_pad(src_pad, None) {
-                        let g_pad = gst::GhostPad::new(Some("src"), src_pad).unwrap();
-                        let _ = g_pad.set_active(true);
-
-                        if stream.add_pad(&g_pad).is_ok() {
-                            let _ = g_pad.link(&sink_pad);
-                        }
-
-                        g_pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
-                            if let Some(ref probe_data) = info.data {
-                                if let gst::PadProbeData::Event(event) = probe_data {
-                                    if event.get_type() == gst::EventType::Eos {
-                                        let strc = gst::Structure::new_empty("delete");
-                                        let msg = gst::Message::new_application(strc)
-                                            .src(Some(&stream))
-                                            .build();
-                                        let _ = stream.post_message(&msg);
-                                    }
-                                }
-                            };
-                            gst::PadProbeReturn::Ok
-                        });
-                    }
-                });
-
-                let ibuf = gst::ElementFactory::make("queue", Some("ibuf")).unwrap();
-                ibuf.set_property("max-size-bytes", &(&threshold)).unwrap();
-                let proto = self.proto.clone();
-                if stream.add(&ibuf).is_ok() {
-                    if ibuf.link(&decoder).is_ok() {
-                        ibuf.connect("overrun", true, move |_| {
-                            proto.do_send(PlayerMessages::Overrun);
-                            None
-                        })
-                        .unwrap();
-                    }
-                } else {
-                    return;
-                };
-
                 let source = gst::ElementFactory::make("souphttpsrc", Some("source")).unwrap();
-                if stream.add(&source).is_ok() {
-                    if source.link(&ibuf).is_err() {
-                        return;
-                    }
-                } else {
-                    return;
-                }
                 source
                     .set_property("user-agent", &"Storm".to_owned())
                     .unwrap();
                 source.set_property("location", &location).unwrap();
+                // source.set_property("is-live", &true).unwrap();
+                source.set_property("iradio-mode", &true).unwrap();
 
                 if let Some(obuf) = self.pipeline.get_by_name("obuf") {
                     obuf.set_property("max-size-time", &(&output_threshold))
@@ -567,13 +508,60 @@ impl actix::Handler<PlayerControl> for Player {
                         gst::PadProbeReturn::Ok
                     });
                 }
+                let ibuf = gst::ElementFactory::make("queue", Some("ibuf")).unwrap();
+                ibuf.set_property("max-size-bytes", &(&threshold)).unwrap();
+                let proto = self.proto.clone();
+                ibuf.connect("overrun", true, move |_| {
+                    proto.do_send(PlayerMessages::Overrun);
+                    None
+                })
+                .unwrap();
+
+                let decoder = gst::ElementFactory::make("decodebin", Some("decoder")).unwrap();
+                let concat_weak = self.pipeline.get_by_name("concat").unwrap().downgrade();
+                let stream_weak = stream.downgrade();
+                decoder.connect_pad_added(move |_, src_pad| {
+                    let concat = concat_weak.upgrade().unwrap();
+                    let stream = stream_weak.upgrade().unwrap();
+
+                    if let Some(sink_pad) = concat.get_compatible_pad(src_pad, None) {
+                        let g_pad = gst::GhostPad::new(Some("src"), src_pad).unwrap();
+                        let _ = g_pad.set_active(true);
+
+                        let flush_stop = gst::event::Event::new_flush_stop(false).build();
+                        sink_pad.send_event(flush_stop);
+
+                        if stream.add_pad(&g_pad).is_ok() {
+                            let _ = g_pad.link(&sink_pad);
+                        }
+
+                        g_pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
+                            if let Some(ref probe_data) = info.data {
+                                if let gst::PadProbeData::Event(event) = probe_data {
+                                    if event.get_type() == gst::EventType::Eos {
+                                        let strc = gst::Structure::new_empty("delete");
+                                        let msg = gst::Message::new_application(strc)
+                                            .src(Some(&stream))
+                                            .build();
+                                        let _ = stream.post_message(&msg);
+                                    }
+                                }
+                            };
+                            gst::PadProbeReturn::Ok
+                        });
+                    }
+                });
+
+                if stream.add_many(&[&source, &ibuf, &decoder]).is_ok() {
+                    let _ = gst::Element::link_many(&[&source, &ibuf, &decoder]);
+                }
 
                 let _ = self.pipeline.add(&stream);
                 let _ = stream.sync_state_with_parent();
 
                 self.streams.insert(0, stream);
 
-                // let _ = self.pipeline.set_state(gst::State::Playing);
+                let _ = self.pipeline.set_state(gst::State::Playing);
             }
 
             PlayerControl::Stop => {
@@ -586,7 +574,8 @@ impl actix::Handler<PlayerControl> for Player {
                 while let Some(bin) = self.streams.pop() {
                     self.block(bin);
                 }
-                self.proto.do_send(PlayerMessages::Flushed);
+                // let _ = self.pipeline.set_state(gst::State::Ready);
+                // self.proto.do_send(PlayerMessages::Flushed);
             }
 
             PlayerControl::Pause(quiet) => {
