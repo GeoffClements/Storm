@@ -14,7 +14,6 @@ extern crate tokio_core;
 extern crate tokio_io;
 extern crate tokio_signal;
 extern crate tokio_tcp;
-extern crate tokio_threadpool;
 extern crate tokio_timer;
 extern crate regex;
 
@@ -27,7 +26,7 @@ use log::LevelFilter;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 
-const VERSION: &'static str = "0.4.1";
+const VERSION: &'static str = "0.4.2";
 
 fn main() {
     let opts = clap::App::new("Storm")

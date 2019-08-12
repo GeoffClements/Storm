@@ -1,17 +1,13 @@
 use actix;
-use actix::{Actor, AsyncContext};
-use futures::future::poll_fn;
-use futures::Future;
+use actix::AsyncContext;
 use gst;
 use gst::prelude::*;
 use gst::MessageView;
 use thread_control;
-use tokio_threadpool::blocking;
 
 use proto;
 
 use std::net::Ipv4Addr;
-use std::time::Duration;
 
 #[derive(Copy, Clone)]
 enum AudioService {
@@ -129,7 +125,6 @@ pub struct Player {
     pub proto: actix::Addr<proto::Proto>,
     pipeline: gst::Pipeline,
     streams: Vec<gst::Bin>,
-    crypt: actix::Addr<Crypt>,
 }
 
 impl Player {
@@ -147,7 +142,6 @@ impl Player {
             proto: proto,
             pipeline: gst::Pipeline::new(Some("stormpipe")),
             streams: Vec::with_capacity(2),
-            crypt: Crypt::new().start(),
         }
     }
 
@@ -565,17 +559,10 @@ impl actix::Handler<PlayerControl> for Player {
             }
 
             PlayerControl::Stop => {
-                // if !self.pipeline.set_state(gst::State::Ready).is_err() {
-                //     info!("Stopping stream");
-                //     // self.proto.do_send(PlayerMessages::Flushed);
-                //     // self.clean_streams(true);
-                // }
                 info!("Stopping stream");
                 while let Some(bin) = self.streams.pop() {
                     self.block(bin);
                 }
-                // let _ = self.pipeline.set_state(gst::State::Ready);
-                // self.proto.do_send(PlayerMessages::Flushed);
             }
 
             PlayerControl::Pause(quiet) => {
@@ -672,51 +659,4 @@ fn buffer_fullness(pipeline: &gst::Pipeline) -> (u32, u32) {
             }
         })
         .unwrap_or((0, 0))
-}
-
-struct Crypt {
-    tombs: Vec<gst::Bin>,
-}
-
-impl Crypt {
-    pub fn new() -> Self {
-        Crypt { tombs: Vec::new() }
-    }
-}
-
-impl actix::Actor for Crypt {
-    type Context = actix::Context<Self>;
-
-    fn started(&mut self, ctx: &mut Self::Context) {
-        // Bring out your dead
-
-        ctx.run_interval(Duration::from_secs(1), |crypt, _| {
-            if let Some(corpse) = crypt.tombs.pop() {
-                match corpse.iterate_elements().fold(true, |is_null, bin| {
-                    match bin.get_state(gst::ClockTime::from_useconds(100)) {
-                        (Ok(_), state, _) => Ok(is_null && state == gst::State::Null),
-                        (Err(_), _, _) => Err(false),
-                    }
-                }) {
-                    Ok(false) | Err(_) => crypt.tombs.insert(0, corpse),
-                    _ => info!("Soylent Green! {}", crypt.tombs.len()), //corpse is dropped
-                }
-            };
-        });
-    }
-}
-
-struct Corpse {
-    corpse: gst::Bin,
-}
-
-impl actix::Message for Corpse {
-    type Result = ();
-}
-
-impl actix::Handler<Corpse> for Crypt {
-    type Result = ();
-    fn handle(&mut self, msg: Corpse, _ctx: &mut actix::Context<Self>) {
-        self.tombs.insert(0, msg.corpse);
-    }
 }
