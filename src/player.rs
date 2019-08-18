@@ -1,7 +1,9 @@
 use actix;
 use actix::AsyncContext;
-use gst;
-use gst::prelude::*;
+use gst::prelude::{
+    Cast, ElementExt, ElementExtManual, GstBinExt, GstBinExtManual, GstObjectExt, ObjectExt,
+    PadExt, PadExtManual,
+};
 use gst::MessageView;
 use thread_control;
 
@@ -160,10 +162,6 @@ impl Player {
                     sink.send_event(eos);
                     let flush_start = gst::event::Event::new_flush_start().build();
                     sink.send_event(flush_start);
-                    // let _ = pad.unlink(&sink);
-                    // if let Some(concat) = sink.get_parent_element() {
-                    //     concat.release_request_pad(&sink);
-                    // }
                 }
                 let strc = gst::Structure::new_empty("delete");
                 let msg = gst::Message::new_application(strc).src(Some(&bin)).build();
@@ -250,7 +248,6 @@ impl actix::Actor for Player {
                 if let gst::PadProbeData::Event(event) = probe_data {
                     if event.get_type() == gst::EventType::StreamStart {
                         proto.do_send(PlayerMessages::Start);
-                        // player.do_send(PlayerControl::Prune);
                     }
                 }
             }
@@ -337,7 +334,6 @@ impl actix::Actor for Player {
                                 if strc.get_name() == "delete" {
                                     if let Some(bin_obj) = msg.get_src() {
                                         if let Ok(bin) = bin_obj.dynamic_cast::<gst::Bin>() {
-                                            info!("{} to null", bin.get_name());
                                             let _ = bin.set_state(gst::State::Null);
                                         }
                                     }
@@ -351,7 +347,6 @@ impl actix::Actor for Player {
                                     if let Ok(bin) = bin_obj.dynamic_cast::<gst::Bin>() {
                                         if let Some(pipe) = bin.get_parent() {
                                             if pipe.get_name() == "stormpipe" {
-                                                info!("Bin to the farm: {}", bin.get_name());
                                                 let sink = match bin.get_static_pad("src") {
                                                     Some(src) => src.get_peer(),
                                                     None => None,
@@ -386,8 +381,6 @@ impl actix::Actor for Player {
                 }
             }
         });
-
-        // let _ = self.pipeline.set_state(gst::State::Playing);
     }
 }
 
@@ -455,7 +448,6 @@ impl actix::Handler<PlayerControl> for Player {
                     .set_property("user-agent", &"Storm".to_owned())
                     .unwrap();
                 source.set_property("location", &location).unwrap();
-                // source.set_property("is-live", &true).unwrap();
                 source.set_property("iradio-mode", &true).unwrap();
 
                 if let Some(obuf) = self.pipeline.get_by_name("obuf") {
@@ -503,7 +495,7 @@ impl actix::Handler<PlayerControl> for Player {
                     });
                 }
                 let ibuf = gst::ElementFactory::make("queue", Some("ibuf")).unwrap();
-                ibuf.set_property("max-size-bytes", &(&threshold)).unwrap();
+                ibuf.set_property("max-size-bytes", &threshold).unwrap();
                 let proto = self.proto.clone();
                 ibuf.connect("overrun", true, move |_| {
                     proto.do_send(PlayerMessages::Overrun);
