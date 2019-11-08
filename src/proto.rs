@@ -264,7 +264,7 @@ impl actix::Handler<player::PlayerMessages> for Proto {
 
             player::PlayerMessages::Error => {
                 self.framed.write(self.stat_data.make_stat_message("STMn"));
-                self.player.do_send(player::PlayerControl::Stop);
+                // self.player.do_send(player::PlayerControl::Stop);
             }
 
             player::PlayerMessages::Start => {

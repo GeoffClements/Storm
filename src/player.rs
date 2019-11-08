@@ -599,6 +599,9 @@ impl actix::Handler<PlayerControl> for Player {
             }
 
             PlayerControl::Prune => {
+                if let Some(bin) = self.streams.pop() {
+                    self.block(bin);
+                }
                 while self.streams.len() > 1 {
                     if let Some(bin) = self.streams.pop() {
                         self.block(bin);
