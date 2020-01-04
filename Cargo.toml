@@ -4,6 +4,9 @@ version = "0.4.2"
 authors = ["Geoff Clements <ro2kz0@gmail.com>"]
 readme = "README.md"
 license = "MIT"
+description = "A Headless Client for Logitec Media Server"
+homepage = "https://github.com/GeoffClements/Storm"
+repository = "https://github.com/GeoffClements/Storm"
 
 [dependencies]
 log = "0.4"
