@@ -2,7 +2,6 @@ use actix;
 use actix::{Actor, ActorContext, Arbiter, AsyncContext, Context, System};
 use futures::{future, Future, Sink, Stream};
 use mac_address;
-use rand::{thread_rng, Rng};
 use regex::RegexSetBuilder;
 use tokio_codec::FramedRead;
 use tokio_core;
@@ -438,20 +437,9 @@ pub fn discover() -> io::Result<Ipv4Addr> {
 
 fn get_mac() -> mac_address::MacAddress {
     match mac_address::get_mac_address() {
-        Ok(mac) => mac.unwrap_or(random_mac()),
-        _ => random_mac(),
+        Ok(Some(mac)) => mac,
+        _ => mac_address::MacAddress::new([1, 2, 3, 4, 5, 6]),
     }
-}
-
-fn random_mac() -> mac_address::MacAddress {
-    let mut rng = thread_rng();
-    let mut mac = [0; 6];
-    let mut mac_temp = Vec::new();
-
-    (0..6).for_each(|_| mac_temp.push(rng.gen::<u8>()));
-    mac_temp[0] |= 0b0000_0010;
-    mac.copy_from_slice(&mac_temp);
-    mac_address::MacAddress::new(mac)
 }
 
 fn get_decode_caps() -> Vec<String> {
@@ -473,7 +461,7 @@ fn get_decode_caps() -> Vec<String> {
         ("vorbis", "ogg"),
         ("pcm", "pcm"),
         ("mp3", "mp3"),
-   ];
+    ];
 
     let sets: Vec<String> = decoders
         .iter()

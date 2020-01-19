@@ -7,7 +7,6 @@ extern crate fern;
 extern crate futures;
 extern crate gstreamer as gst;
 extern crate mac_address;
-extern crate rand;
 extern crate thread_control;
 extern crate tokio_codec;
 extern crate tokio_core;
