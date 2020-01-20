@@ -1,5 +1,4 @@
 use actix;
-use actix::AsyncContext;
 use gst::prelude::{
     Cast, ElementExt, ElementExtManual, GstBinExt, GstBinExtManual, GstObjectExt, ObjectExt,
     PadExt, PadExtManual,
@@ -89,7 +88,6 @@ pub enum PlayerControl {
     Pause(bool),
     Unpause(bool),
     Skip(u32),
-    Prune,
 }
 
 impl actix::Message for PlayerControl {
@@ -126,7 +124,6 @@ pub struct Player {
     thread: Option<thread_control::Control>,
     pub proto: actix::Addr<proto::Proto>,
     pipeline: gst::Pipeline,
-    streams: Vec<gst::Bin>,
 }
 
 impl Player {
@@ -143,31 +140,6 @@ impl Player {
             thread: None,
             proto: proto,
             pipeline: gst::Pipeline::new(Some("stormpipe")),
-            streams: Vec::with_capacity(2),
-        }
-    }
-
-    fn block(&mut self, bin: gst::Bin) {
-        if let Some(pad) = bin.get_static_pad("src") {
-            pad.add_probe(gst::PadProbeType::IDLE, move |pad, _info| {
-                pad.add_probe(
-                    gst::PadProbeType::BLOCK
-                        | gst::PadProbeType::BUFFER
-                        | gst::PadProbeType::BUFFER_LIST,
-                    |_, _| gst::PadProbeReturn::Drop,
-                );
-
-                if let Some(sink) = pad.get_peer() {
-                    let eos = gst::event::Event::new_eos().build();
-                    sink.send_event(eos);
-                    let flush_start = gst::event::Event::new_flush_start().build();
-                    sink.send_event(flush_start);
-                }
-                let strc = gst::Structure::new_empty("delete");
-                let msg = gst::Message::new_application(strc).src(Some(&bin)).build();
-                let _ = bin.post_message(&msg);
-                gst::PadProbeReturn::Remove
-            });
         }
     }
 }
@@ -175,7 +147,7 @@ impl Player {
 impl actix::Actor for Player {
     type Context = actix::Context<Self>;
 
-    fn started(&mut self, ctx: &mut actix::Context<Self>) {
+    fn started(&mut self, _ctx: &mut actix::Context<Self>) {
         if self.pipeline.get_by_name("sink").is_some() {
             return;
         }
@@ -277,7 +249,6 @@ impl actix::Actor for Player {
 
         //Set up periodic message
         let proto = self.proto.clone();
-        let player = ctx.address().clone();
         let (flag, control) = thread_control::make_pair();
         self.thread = Some(control);
         let bus = self.pipeline.get_bus().unwrap();
@@ -306,8 +277,16 @@ impl actix::Actor for Player {
                                     "undefined".to_owned()
                                 }
                             );
-                            proto.do_send(PlayerMessages::Error);
-                            player.do_send(PlayerControl::Prune);
+
+                            if let Some(source) = error.get_src() {
+                                if let Some(parent) = source.get_parent() {
+                                    // *** need to find bin whose parent is "stormpipe"
+                                    if let Ok(bin) = parent.dynamic_cast::<gst::Bin>() {
+                                        block(bin);
+                                        proto.do_send(PlayerMessages::Error);
+                                    }
+                                }
+                            }
                         }
 
                         MessageView::Element(element) => {
@@ -347,7 +326,7 @@ impl actix::Actor for Player {
                                     if let Ok(bin) = bin_obj.dynamic_cast::<gst::Bin>() {
                                         if let Some(pipe) = bin.get_parent() {
                                             if pipe.get_name() == "stormpipe" {
-                                                let sink = match bin.get_static_pad("src") {
+                                                let sink = match bin.get_static_pad("g_src") {
                                                     Some(src) => src.get_peer(),
                                                     None => None,
                                                 };
@@ -511,13 +490,14 @@ impl actix::Handler<PlayerControl> for Player {
                     let stream = stream_weak.upgrade().unwrap();
 
                     if let Some(sink_pad) = concat.get_compatible_pad(src_pad, None) {
-                        let g_pad = gst::GhostPad::new(Some("src"), src_pad).unwrap();
+                        let g_pad = gst::GhostPad::new(Some("g_src"), src_pad).unwrap();
                         let _ = g_pad.set_active(true);
 
                         let flush_stop = gst::event::Event::new_flush_stop(false).build();
                         sink_pad.send_event(flush_stop);
 
                         if stream.add_pad(&g_pad).is_ok() {
+                            info!("Connecting the stream");
                             let _ = g_pad.link(&sink_pad);
                         }
 
@@ -545,16 +525,13 @@ impl actix::Handler<PlayerControl> for Player {
                 let _ = self.pipeline.add(&stream);
                 let _ = stream.sync_state_with_parent();
 
-                self.streams.insert(0, stream);
-
+                info!("Starting the stream");
                 let _ = self.pipeline.set_state(gst::State::Playing);
             }
 
             PlayerControl::Stop => {
                 info!("Stopping stream");
-                while let Some(bin) = self.streams.pop() {
-                    self.block(bin);
-                }
+                let _ = self.pipeline.set_state(gst::State::Null);
             }
 
             PlayerControl::Pause(quiet) => {
@@ -596,17 +573,6 @@ impl actix::Handler<PlayerControl> for Player {
                 )
                 .build();
                 self.pipeline.send_event(seek);
-            }
-
-            PlayerControl::Prune => {
-                if let Some(bin) = self.streams.pop() {
-                    self.block(bin);
-                }
-                while self.streams.len() > 1 {
-                    if let Some(bin) = self.streams.pop() {
-                        self.block(bin);
-                    }
-                }
             }
         }
     }
@@ -654,4 +620,28 @@ fn buffer_fullness(pipeline: &gst::Pipeline) -> (u32, u32) {
             }
         })
         .unwrap_or((0, 0))
+}
+
+fn block(bin: gst::Bin) {
+    if let Some(pad) = bin.get_static_pad("g_src") {
+        pad.add_probe(gst::PadProbeType::IDLE, move |pad, _info| {
+            pad.add_probe(
+                gst::PadProbeType::BLOCK
+                    | gst::PadProbeType::BUFFER
+                    | gst::PadProbeType::BUFFER_LIST,
+                |_, _| gst::PadProbeReturn::Drop,
+            );
+
+            if let Some(sink) = pad.get_peer() {
+                let eos = gst::event::Event::new_eos().build();
+                sink.send_event(eos);
+                let flush_start = gst::event::Event::new_flush_start().build();
+                sink.send_event(flush_start);
+            }
+            let strc = gst::Structure::new_empty("delete");
+            let msg = gst::Message::new_application(strc).src(Some(&bin)).build();
+            let _ = bin.post_message(&msg);
+            gst::PadProbeReturn::Remove
+        });
+    }
 }
