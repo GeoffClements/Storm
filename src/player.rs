@@ -9,6 +9,8 @@ use thread_control;
 use proto;
 
 use std::net::Ipv4Addr;
+use std::thread;
+use std::time;
 
 #[derive(Copy, Clone)]
 enum AudioService {
@@ -384,7 +386,7 @@ impl actix::Handler<PlayerControl> for Player {
                     volume.set_property("volume", &self.gain).unwrap();
                 }
             }
-
+            
             PlayerControl::Enable(enable) => {
                 info!("Setting enable to {}", enable);
                 self.enable = enable;
@@ -392,7 +394,7 @@ impl actix::Handler<PlayerControl> for Player {
                     volume.set_property("mute", &!enable).unwrap();
                 }
             }
-
+            
             PlayerControl::Stream {
                 autostart,
                 threshold,
@@ -404,6 +406,17 @@ impl actix::Handler<PlayerControl> for Player {
                 http_headers,
             } => {
                 info!("Got stream request, autostart: {}", autostart);
+                
+                // wait for pipeline state to settle
+                while {
+                    match self.pipeline.get_state(gst::ClockTime::none()) {
+                        (Ok(gst::StateChangeSuccess::Success), _, gst::State::VoidPending) => false,
+                        _ => true,
+                    }
+                } {
+                    thread::sleep(time::Duration::from_millis(10));
+                }
+                thread::sleep(time::Duration::from_millis(100));
 
                 let server_ip = if server_ip == Ipv4Addr::new(0, 0, 0, 0) {
                     control_ip
