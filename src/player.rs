@@ -124,6 +124,7 @@ pub struct Player {
     thread: Option<thread_control::Control>,
     pub proto: actix::Addr<proto::Proto>,
     pipeline: gst::Pipeline,
+    count: u32,
 }
 
 impl Player {
@@ -140,6 +141,7 @@ impl Player {
             thread: None,
             proto: proto,
             pipeline: gst::Pipeline::new(Some("stormpipe")),
+            count: 0,
         }
     }
 }
@@ -278,10 +280,13 @@ impl actix::Actor for Player {
                                 }
                             );
 
-                            if let Some(source) = error.get_src() {
-                                if let Some(parent) = source.get_parent() {
-                                    // *** need to find bin whose parent is "stormpipe"
-                                    if let Ok(bin) = parent.dynamic_cast::<gst::Bin>() {
+                            if let Some(mut source) = error.get_src() {
+                                while !source.has_as_parent(&pipeline) {
+                                    source = source.get_parent().unwrap();
+                                }
+
+                                if source.get_name().starts_with("storm_") {
+                                    if let Ok(bin) = source.dynamic_cast::<gst::Bin>() {
                                         block(bin);
                                         proto.do_send(PlayerMessages::Error);
                                     }
@@ -323,21 +328,20 @@ impl actix::Actor for Player {
                         MessageView::StateChanged(statechange) => {
                             if statechange.get_current() == gst::State::Null {
                                 if let Some(bin_obj) = msg.get_src() {
-                                    if let Ok(bin) = bin_obj.dynamic_cast::<gst::Bin>() {
-                                        if let Some(pipe) = bin.get_parent() {
-                                            if pipe.get_name() == "stormpipe" {
-                                                let sink = match bin.get_static_pad("g_src") {
-                                                    Some(src) => src.get_peer(),
-                                                    None => None,
-                                                };
-                                                let _ = pipeline.remove(&bin);
-                                                proto.do_send(PlayerMessages::Flushed);
-                                                if let Some(sink_pad) = sink {
-                                                    if let Some(concat) =
-                                                        sink_pad.get_parent_element()
-                                                    {
-                                                        concat.release_request_pad(&sink_pad);
-                                                    }
+                                    if bin_obj.has_as_parent(&pipeline)
+                                        && bin_obj.get_name().starts_with("storm_")
+                                    {
+                                        if let Ok(bin) = bin_obj.dynamic_cast::<gst::Bin>() {
+                                            let sink = match bin.get_static_pad("g_src") {
+                                                Some(src) => src.get_peer(),
+                                                None => None,
+                                            };
+                                            let _ = pipeline.remove(&bin);
+                                            proto.do_send(PlayerMessages::Flushed);
+                                            if let Some(sink_pad) = sink {
+                                                if let Some(concat) = sink_pad.get_parent_element()
+                                                {
+                                                    concat.release_request_pad(&sink_pad);
                                                 }
                                             }
                                         }
@@ -420,7 +424,8 @@ impl actix::Handler<PlayerControl> for Player {
                 let location = format!("http://{}:{}{}", server_ip, server_port, get);
                 info!("{}", location);
 
-                let stream = gst::Bin::new(None);
+                let stream = gst::Bin::new(Some(format!("storm_{}", self.count).as_str()));
+                self.count = self.count.wrapping_add(1);
 
                 let source = gst::ElementFactory::make("souphttpsrc", Some("source")).unwrap();
                 source
